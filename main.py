@@ -14,6 +14,7 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import quote_plus, urlencode
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import requests
@@ -52,6 +53,7 @@ PBKDF2_ROUNDS = 200_000
 GOOGLE_CLIENT_ID = (os.getenv("GOOGLE_CLIENT_ID") or "").strip().strip('"').strip("'")
 GOOGLE_CLIENT_SECRET = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip().strip('"').strip("'")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+EVALUATION_SCENARIOS_FILE = Path(os.getenv("EVALUATION_SCENARIOS_FILE", str(Path.cwd() / "evaluation" / "sample_scenarios.json")))
 
 app = FastAPI(title="Agentic Honeypot AI (Dashboard Edition)")
 client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
@@ -833,6 +835,11 @@ class AnalyzeBody(BaseModel):
     links: list[str] = Field(default_factory=list)
 
 
+class EvaluationRunBody(BaseModel):
+    scenarioIds: list[str] = Field(default_factory=list)
+    repeats: int = 1
+
+
 # ==========================================================
 # DASHBOARD HELPERS
 # ==========================================================
@@ -940,6 +947,44 @@ def list_sessions_summary() -> list[dict[str, Any]]:
         )
     result.sort(key=lambda x: x["updatedAt"], reverse=True)
     return result
+
+
+def load_evaluation_scenarios() -> list[dict[str, Any]]:
+    if not EVALUATION_SCENARIOS_FILE.exists():
+        return []
+    try:
+        raw = json.loads(EVALUATION_SCENARIOS_FILE.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, list) else []
+    except Exception:
+        return []
+
+
+def evaluate_scenario_result(last_data: dict[str, Any], scenario: dict[str, Any]) -> tuple[bool, list[str]]:
+    expect = scenario.get("expect", {}) if isinstance(scenario.get("expect"), dict) else {}
+    reasons_text = " ".join(str(x) for x in last_data.get("reasons", []))
+    probability = float(last_data.get("scam_probability", 0))
+    notes: list[str] = []
+    passed = True
+
+    if "min_probability" in expect:
+        min_prob = float(expect["min_probability"])
+        if probability < min_prob:
+            passed = False
+            notes.append(f"Expected min_probability {min_prob}, got {probability}")
+    if "max_probability" in expect:
+        max_prob = float(expect["max_probability"])
+        if probability > max_prob:
+            passed = False
+            notes.append(f"Expected max_probability {max_prob}, got {probability}")
+
+    must_reasons = expect.get("must_contain_reason", [])
+    if isinstance(must_reasons, list):
+        for token in must_reasons:
+            if str(token).lower() not in reasons_text.lower():
+                passed = False
+                notes.append(f"Expected reason token missing: {token}")
+
+    return passed, notes
 
 
 # ==========================================================
@@ -1081,6 +1126,111 @@ async def analyze_scam_probability(body: AnalyzeBody) -> dict[str, Any]:
         "scam_probability": result["scam_probability"],
         "risk_level": result["risk_level"],
         "reasons": result["reasons"],
+    }
+
+
+@app.get("/api/evaluation/scenarios")
+async def api_evaluation_scenarios(request: Request) -> dict[str, Any]:
+    if not current_user_from_request(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    scenarios = load_evaluation_scenarios()
+    return {"count": len(scenarios), "scenarios": scenarios}
+
+
+@app.post("/api/evaluation/run")
+async def api_evaluation_run(body: EvaluationRunBody, x_api_key: str | None = Header(None)) -> dict[str, Any]:
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    scenarios = load_evaluation_scenarios()
+    if not scenarios:
+        raise HTTPException(status_code=404, detail="No evaluation scenarios found")
+
+    wanted = set(body.scenarioIds or [])
+    selected = [s for s in scenarios if (not wanted or str(s.get("id")) in wanted)]
+    if not selected:
+        raise HTTPException(status_code=404, detail="No matching scenarios selected")
+
+    repeats = max(1, min(5, int(body.repeats or 1)))
+    results: list[dict[str, Any]] = []
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://internal") as client_internal:
+        for scenario in selected:
+            scenario_id = str(scenario.get("id", "unknown"))
+            title = str(scenario.get("title", scenario_id))
+            messages = scenario.get("messages", [])
+            if not isinstance(messages, list) or not messages:
+                continue
+
+            for run_no in range(1, repeats + 1):
+                session_id = f"eval-{scenario_id}-{run_no}-{uuid4().hex[:8]}"
+                last_data: dict[str, Any] = {}
+                failed = False
+
+                for message in messages:
+                    response = await client_internal.post(
+                        "/honeypot",
+                        headers={"x-api-key": API_KEY},
+                        json={
+                            "sessionId": session_id,
+                            "message": {
+                                "sender": "scammer",
+                                "text": str(message),
+                                "timestamp": int(time.time()),
+                            },
+                            "conversationHistory": [],
+                            "metadata": {"mode": "evaluation", "scenarioId": scenario_id},
+                        },
+                    )
+                    if response.status_code >= 400:
+                        failed = True
+                        last_data = {"error": response.text[:200], "status_code": response.status_code}
+                        break
+                    last_data = response.json()
+
+                if failed:
+                    results.append(
+                        {
+                            "scenarioId": scenario_id,
+                            "title": title,
+                            "run": run_no,
+                            "sessionId": session_id,
+                            "passed": False,
+                            "notes": [f"Honeypot call failed: {last_data}"],
+                            "result": last_data,
+                        }
+                    )
+                    continue
+
+                passed, notes = evaluate_scenario_result(last_data, scenario)
+                results.append(
+                    {
+                        "scenarioId": scenario_id,
+                        "title": title,
+                        "run": run_no,
+                        "sessionId": session_id,
+                        "passed": passed,
+                        "notes": notes,
+                        "result": {
+                            "scam_probability": last_data.get("scam_probability", 0),
+                            "risk_level": last_data.get("risk_level", "LOW"),
+                            "reasons": last_data.get("reasons", []),
+                        },
+                    }
+                )
+
+    total = len(results)
+    passed = sum(1 for item in results if item.get("passed"))
+    failed = total - passed
+
+    return {
+        "status": "success",
+        "totalRuns": total,
+        "passedRuns": passed,
+        "failedRuns": failed,
+        "passRate": round((passed / total) * 100, 2) if total else 0.0,
+        "results": results,
     }
 
 

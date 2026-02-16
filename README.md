@@ -82,6 +82,15 @@ Production-ready FastAPI honeypot platform with:
 - Signup/login with local credentials
 - Google OAuth sign-in
 
+### 7. Evaluation System (Scenarios + Runner)
+- Scenarios file: `evaluation/sample_scenarios.json`
+- List scenarios: `GET /api/evaluation/scenarios` (requires login cookie)
+- Run evaluation: `POST /api/evaluation/run` (requires `x-api-key`)
+- Evaluator runs each scenario through live `/honeypot` flow and returns:
+  - pass/fail per run
+  - pass rate
+  - final `scam_probability`, `risk_level`, and `reasons`
+
 ---
 
 ## Environment Variables
@@ -112,6 +121,7 @@ TELEGRAM_USERS_FILE=users.json
 DB_PATH=users.db
 SCAM_DB_PATH=scam_history.db
 SCREENSHOT_DIR=sandbox_shots
+EVALUATION_SCENARIOS_FILE=evaluation/sample_scenarios.json
 ```
 
 ---
@@ -179,6 +189,23 @@ POST /telegram-webhook
 
 Telegram sends updates here automatically.
 
+### Evaluation Scenarios
+```http
+GET /api/evaluation/scenarios
+```
+
+### Evaluation Run
+```http
+POST /api/evaluation/run
+Header: x-api-key: <HONEYPOT_API_KEY>
+Content-Type: application/json
+
+{
+  "scenarioIds": ["bank_account_blocked_link", "refund_upi_collection"],
+  "repeats": 1
+}
+```
+
 ---
 
 ## Telegram Setup
@@ -229,6 +256,7 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_REDIRECT_URI=https://<service>.onrender.com/auth/google/callback`
+- `EVALUATION_SCENARIOS_FILE=/var/data/evaluation/sample_scenarios.json` (if storing on disk)
 
 ### Persistent Disk (recommended)
 Set paths to mounted disk, e.g. `/var/data`:
@@ -236,6 +264,21 @@ Set paths to mounted disk, e.g. `/var/data`:
 - `SCAM_DB_PATH=/var/data/scam_history.db`
 - `TELEGRAM_USERS_FILE=/var/data/users.json`
 - `SCREENSHOT_DIR=/var/data/sandbox_shots`
+
+For evaluation scenarios on Render disk:
+- Create directory `/var/data/evaluation`
+- Copy scenarios file there or keep bundled repo file
+- If using disk file: set `EVALUATION_SCENARIOS_FILE=/var/data/evaluation/sample_scenarios.json`
+
+### Your Live Render URL
+- Base URL: `https://blurbit-ai.onrender.com`
+- Health check: `https://blurbit-ai.onrender.com/health`
+- Dashboard: `https://blurbit-ai.onrender.com/dashboard`
+- Chat: `https://blurbit-ai.onrender.com/chat`
+- Telegram webhook target:
+  - `https://blurbit-ai.onrender.com/telegram-webhook`
+  - Set webhook:
+    - `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://blurbit-ai.onrender.com/telegram-webhook`
 
 ---
 

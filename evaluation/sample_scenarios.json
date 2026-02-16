@@ -1,0 +1,65 @@
+[
+  {
+    "id": "bank_account_blocked_link",
+    "title": "Bank account blocked with phishing link",
+    "messages": [
+      "Hello sir, your bank account is blocked due to KYC issue.",
+      "Kindly click this link and verify immediately: https://sbi-verify1.xyz",
+      "Share OTP to unblock your account now."
+    ],
+    "expect": {
+      "min_probability": 65,
+      "must_contain_reason": ["Scam keywords", "Suspicious link", "Threat"]
+    }
+  },
+  {
+    "id": "refund_upi_collection",
+    "title": "Fake refund using UPI collection",
+    "messages": [
+      "You are eligible for electricity refund.",
+      "Send processing amount to refund01@paytm for instant credit.",
+      "Urgent, complete in 5 minutes."
+    ],
+    "expect": {
+      "min_probability": 60,
+      "must_contain_reason": ["UPI", "Urgency", "Payment"]
+    }
+  },
+  {
+    "id": "job_scam_advance_fee",
+    "title": "Job scam with advance fee",
+    "messages": [
+      "Congratulations, you got selected for remote job.",
+      "Pay joining fee now to secure your slot.",
+      "Transfer to careerhelp22@ybl and send screenshot."
+    ],
+    "expect": {
+      "min_probability": 55,
+      "must_contain_reason": ["Payment", "UPI"]
+    }
+  },
+  {
+    "id": "gift_card_scam",
+    "title": "Gift card code harvesting",
+    "messages": [
+      "We are from support team.",
+      "Buy gift card and share code to activate your account.",
+      "Do it now or account will be suspended."
+    ],
+    "expect": {
+      "min_probability": 55,
+      "must_contain_reason": ["Threat", "Urgency"]
+    }
+  },
+  {
+    "id": "normal_customer_query",
+    "title": "Benign customer support style message",
+    "messages": [
+      "Hi, I need help to check my account balance.",
+      "Can you tell me branch working hours?"
+    ],
+    "expect": {
+      "max_probability": 45
+    }
+  }
+]
