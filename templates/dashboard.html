@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Honeypot Live Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/dashboard.css" />
+  </head>
+  <body>
+    <div class="bg-grid"></div>
+    <div class="bg-glow bg-glow-one"></div>
+    <div class="bg-glow bg-glow-two"></div>
+
+    <header class="topbar shell">
+      <div>
+        <p class="eyebrow">AI Threat Monitoring</p>
+        <h1>BlurBitAI Agentic Command Center</h1>
+      </div>
+      <div class="topbar-right">
+        <div class="user-strip">
+          <span>Signed in: {{ user.name }}</span>
+          <a href="/logout">Logout</a>
+        </div>
+        <p id="lastUpdated" class="muted">Last update: --</p>
+        <div class="status-line">
+          <span id="threatPill" class="pill">Threat: LOW</span>
+          <span id="connStatus" class="badge">Connecting...</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="layout shell">
+      <section class="cards">
+        <article class="card">
+          <h2>Total Sessions</h2>
+          <p id="totalSessions">0</p>
+        </article>
+        <article class="card">
+          <h2>Total Messages</h2>
+          <p id="totalMessages">0</p>
+        </article>
+        <article class="card">
+          <h2>Scanned Links</h2>
+          <p id="totalScannedLinks">0</p>
+        </article>
+        <article class="card danger">
+          <h2>Phishing Links</h2>
+          <p id="phishingLinks">0</p>
+        </article>
+        <article class="card">
+          <h2>Average Risk Score</h2>
+          <p id="avgRiskScore">0.00</p>
+        </article>
+        <article class="card danger">
+          <h2>Critical Sessions</h2>
+          <p id="criticalSessions">0</p>
+        </article>
+      </section>
+
+      <section class="panel insights-grid">
+        <div class="chart-box">
+          <div class="section-head">
+            <h3>Verdict Distribution</h3>
+            <span class="muted">SAFE / SUSPICIOUS / PHISHING / ERROR</span>
+          </div>
+          <canvas id="verdictChart" height="200"></canvas>
+        </div>
+
+        <div class="chart-box">
+          <div class="section-head">
+            <h3>Intel Capture Snapshot</h3>
+            <span class="muted">Extracted PII signals</span>
+          </div>
+          <div class="probability-wrap">
+            <div class="probability-gauge" id="probabilityGauge">
+              <svg viewBox="0 0 120 120" aria-hidden="true">
+                <circle class="gauge-track" cx="60" cy="60" r="48"></circle>
+                <circle id="gaugeFill" class="gauge-fill" cx="60" cy="60" r="48"></circle>
+              </svg>
+              <div class="gauge-center">
+                <strong id="gaugePercent">0%</strong>
+                <span id="gaugeRiskLevel">LOW</span>
+              </div>
+            </div>
+            <p id="gaugeLabel" class="muted gauge-label">Live Max Session Probability</p>
+          </div>
+          <div class="intel-grid">
+            <div class="intel-tile">
+              <p>Bank Accounts</p>
+              <strong id="bankAccounts">0</strong>
+            </div>
+            <div class="intel-tile">
+              <p>UPI IDs</p>
+              <strong id="upiIds">0</strong>
+            </div>
+            <div class="intel-tile">
+              <p>Phone Numbers</p>
+              <strong id="phoneNumbers">0</strong>
+            </div>
+            <div class="intel-tile">
+              <p>Threat Score</p>
+              <strong id="threatScore">0</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel two-col">
+        <div class="table-wrap">
+          <div class="section-head">
+            <h3>Live Sessions</h3>
+            <span class="muted">Click a row for full detail</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Session ID</th>
+                <th>Messages</th>
+                <th>Risk Score</th>
+                <th>Scam %</th>
+                <th>Risk Level</th>
+                <th>Verdict</th>
+              </tr>
+            </thead>
+            <tbody id="sessionsBody"></tbody>
+          </table>
+        </div>
+
+        <div class="stack">
+          <div>
+            <h3>Top Suspicious Keywords</h3>
+            <ul id="keywordsList" class="list"></ul>
+          </div>
+
+          <div>
+            <h3>Recent Alerts</h3>
+            <ul id="alertsList" class="list"></ul>
+          </div>
+
+          <div>
+            <h3>Live Events</h3>
+            <ul id="eventsList" class="list"></ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>Selected Session Detail</h3>
+        <pre id="sessionDetail">Click a session row to inspect details.</pre>
+      </section>
+    </main>
+
+    <script src="/static/dashboard.js"></script>
+  </body>
+</html>

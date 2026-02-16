@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% if mode == 'signup' %}Create Account{% else %}Sign In{% endif %} - Honeypot</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/auth.css" />
+  </head>
+  <body>
+    <div class="glow g1"></div>
+    <div class="glow g2"></div>
+
+    <main class="auth-shell">
+      <section class="auth-card">
+        <p class="eyebrow">Agentic Honeypot</p>
+        <h1>{% if mode == 'signup' %}Create your account{% else %}Sign in to dashboard{% endif %}</h1>
+
+        {% if error %}
+        <p class="error">{{ error }}</p>
+        {% endif %}
+
+        <form method="post" action="/{% if mode == 'signup' %}signup{% else %}login{% endif %}" class="form">
+          {% if mode == 'signup' %}
+          <label>
+            Full name
+            <input type="text" name="name" placeholder="Enter name" required />
+          </label>
+          {% endif %}
+
+          <label>
+            Email
+            <input type="email" name="email" placeholder="you@example.com" required />
+          </label>
+
+          <label>
+            Password
+            <input type="password" name="password" placeholder="Min 8 characters" required />
+          </label>
+
+          <button type="submit" class="primary">
+            {% if mode == 'signup' %}Create account{% else %}Sign in{% endif %}
+          </button>
+        </form>
+
+        {% if google_enabled %}
+        <a class="google" href="/auth/google/login">Continue with Google</a>
+        {% else %}
+        <p class="hint">Google sign-in is disabled. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.</p>
+        {% endif %}
+        <p class="hint">If Google redirects fail, add the exact callback URL shown in your browser host: `/auth/google/callback`.</p>
+
+        <p class="switch">
+          {% if mode == 'signup' %}
+          Already have an account? <a href="/login">Sign in</a>
+          {% else %}
+          New here? <a href="/signup">Create account</a>
+          {% endif %}
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

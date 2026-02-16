@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Honeypot Live Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/chat.css" />
+  </head>
+  <body>
+    <main class="chat-shell">
+      <aside class="panel controls">
+        <h1>Live Conversation Console</h1>
+        <p class="muted">Logged in: {{ user.name }}</p>
+
+        <label>
+          Session ID
+          <input id="sessionId" type="text" placeholder="session-001" />
+        </label>
+
+        <label>
+          Honeypot API Key
+          <input id="apiKey" type="password" placeholder="Enter HONEYPOT_API_KEY" />
+        </label>
+
+        <div class="btn-grid">
+          <button id="newSessionBtn" class="secondary" type="button">New Session ID</button>
+          <button id="testTelegramBtn" class="secondary" type="button">Test Telegram Alert</button>
+          <button id="exportJsonBtn" class="secondary" type="button">Export JSON</button>
+          <button id="exportCsvBtn" class="secondary" type="button">Export CSV</button>
+        </div>
+        <a class="link" href="/dashboard" target="_blank" rel="noopener noreferrer">Open Dashboard</a>
+      </aside>
+
+      <section class="panel chat-area">
+        <div id="chatThread" class="thread"></div>
+        <p id="typingIndicator" class="typing">BlurBitAI is typing...</p>
+
+        <form id="chatForm" class="composer">
+          <input id="msgInput" type="text" placeholder="Type scammer message..." autocomplete="off" required />
+          <button type="submit">Send</button>
+        </form>
+      </section>
+
+      <aside class="panel intel">
+        <h2>Session Intel</h2>
+        <pre id="intelView">No data yet.</pre>
+      </aside>
+    </main>
+
+    <script src="/static/chat.js"></script>
+  </body>
+</html>
