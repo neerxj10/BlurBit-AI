@@ -44,6 +44,9 @@ CALLBACK_URL = os.getenv("CALLBACK_URL", "https://hackathon.guvi.in/api/updateHo
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_ALERTS_ENABLED = os.getenv("TELEGRAM_ALERTS_ENABLED", "true").lower() == "true"
 TELEGRAM_USERS_FILE = Path(os.getenv("TELEGRAM_USERS_FILE", str(Path.cwd() / "users.json")))
+TELEGRAM_ACCESS_KEY = os.getenv("TELEGRAM_ACCESS_KEY", API_KEY).strip()
+TELEGRAM_INVITE_TOKENS_FILE = Path(os.getenv("TELEGRAM_INVITE_TOKENS_FILE", str(Path.cwd() / "telegram_invite_tokens.json")))
+TELEGRAM_ADMIN_EMAILS = {x.strip().lower() for x in (os.getenv("TELEGRAM_ADMIN_EMAILS", "")).split(",") if x.strip()}
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", str(Path.cwd() / "sandbox_shots")))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = Path(os.getenv("DB_PATH", "users.db"))
@@ -242,6 +245,7 @@ def upsert_google_user(email: str, display_name: str, google_sub: str) -> sqlite
 sessions: dict[str, dict[str, Any]] = {}
 sessions_lock = asyncio.Lock()
 telegram_users_file_lock = threading.Lock()
+telegram_invites_file_lock = threading.Lock()
 
 
 class ConnectionManager:
@@ -335,8 +339,130 @@ def save_user(chat_id: int) -> bool:
         if chat_id in users:
             return False
         users.append(chat_id)
+        TELEGRAM_USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
         TELEGRAM_USERS_FILE.write_text(json.dumps(users, indent=2), encoding="utf-8")
         return True
+
+
+def is_registered_user(chat_id: int) -> bool:
+    try:
+        users = load_users()
+        return int(chat_id) in users
+    except Exception:
+        return False
+
+
+def is_admin_user(user: dict[str, Any] | None) -> bool:
+    if not user:
+        return False
+    email = str(user.get("email", "")).strip().lower()
+    if not email:
+        return False
+    return email in TELEGRAM_ADMIN_EMAILS if TELEGRAM_ADMIN_EMAILS else False
+
+
+def _load_invite_tokens() -> list[dict[str, Any]]:
+    if not TELEGRAM_INVITE_TOKENS_FILE.exists():
+        return []
+    try:
+        raw = json.loads(TELEGRAM_INVITE_TOKENS_FILE.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, list) else []
+    except Exception:
+        return []
+
+
+def _save_invite_tokens(tokens: list[dict[str, Any]]) -> None:
+    TELEGRAM_INVITE_TOKENS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TELEGRAM_INVITE_TOKENS_FILE.write_text(json.dumps(tokens, indent=2), encoding="utf-8")
+
+
+def _cleanup_expired_tokens(tokens: list[dict[str, Any]], now_ts: int | None = None) -> list[dict[str, Any]]:
+    now_ts = now_ts or int(time.time())
+    cleaned: list[dict[str, Any]] = []
+    for token in tokens:
+        expires_at = int(token.get("expiresAt", 0) or 0)
+        if expires_at and expires_at < now_ts:
+            continue
+        cleaned.append(token)
+    return cleaned
+
+
+def create_invite_token(expires_in_minutes: int = 10, max_uses: int = 1) -> dict[str, Any]:
+    expires_in_minutes = max(1, min(1440, int(expires_in_minutes)))
+    max_uses = max(1, min(5, int(max_uses)))
+    now = int(time.time())
+    token = f"BLR-{uuid4().hex[:10].upper()}"
+    item = {
+        "token": token,
+        "createdAt": now,
+        "expiresAt": now + (expires_in_minutes * 60),
+        "maxUses": max_uses,
+        "usedCount": 0,
+        "revoked": False,
+    }
+    with telegram_invites_file_lock:
+        tokens = _cleanup_expired_tokens(_load_invite_tokens(), now)
+        tokens.append(item)
+        _save_invite_tokens(tokens)
+    return item
+
+
+def list_invite_tokens() -> list[dict[str, Any]]:
+    now = int(time.time())
+    with telegram_invites_file_lock:
+        tokens = _cleanup_expired_tokens(_load_invite_tokens(), now)
+        _save_invite_tokens(tokens)
+    # Return newest first.
+    tokens.sort(key=lambda x: int(x.get("createdAt", 0)), reverse=True)
+    return tokens
+
+
+def revoke_invite_token(token_value: str) -> bool:
+    token_value = (token_value or "").strip().upper()
+    if not token_value:
+        return False
+    updated = False
+    with telegram_invites_file_lock:
+        tokens = _load_invite_tokens()
+        for item in tokens:
+            if str(item.get("token", "")).upper() == token_value and not bool(item.get("revoked", False)):
+                item["revoked"] = True
+                updated = True
+                break
+        if updated:
+            _save_invite_tokens(tokens)
+    return updated
+
+
+def consume_invite_token(token_value: str) -> tuple[bool, str]:
+    token_value = (token_value or "").strip().upper()
+    if not token_value:
+        return False, "missing"
+    now = int(time.time())
+
+    with telegram_invites_file_lock:
+        tokens = _cleanup_expired_tokens(_load_invite_tokens(), now)
+        for item in tokens:
+            if str(item.get("token", "")).upper() != token_value:
+                continue
+            if bool(item.get("revoked", False)):
+                _save_invite_tokens(tokens)
+                return False, "revoked"
+            if int(item.get("expiresAt", 0) or 0) < now:
+                _save_invite_tokens(tokens)
+                return False, "expired"
+            used_count = int(item.get("usedCount", 0) or 0)
+            max_uses = int(item.get("maxUses", 1) or 1)
+            if used_count >= max_uses:
+                _save_invite_tokens(tokens)
+                return False, "used"
+
+            item["usedCount"] = used_count + 1
+            _save_invite_tokens(tokens)
+            return True, "ok"
+
+        _save_invite_tokens(tokens)
+    return False, "invalid"
 
 
 async def send_telegram_message(text: str) -> bool:
@@ -838,6 +964,15 @@ class AnalyzeBody(BaseModel):
 class EvaluationRunBody(BaseModel):
     scenarioIds: list[str] = Field(default_factory=list)
     repeats: int = 1
+
+
+class TelegramInviteCreateBody(BaseModel):
+    expiresInMinutes: int = 10
+    maxUses: int = 1
+
+
+class TelegramInviteRevokeBody(BaseModel):
+    token: str
 
 
 # ==========================================================
@@ -1448,6 +1583,58 @@ async def api_test_telegram(body: TelegramTestBody, request: Request) -> dict[st
     return {"status": "success", "sessionId": sid}
 
 
+@app.get("/api/telegram/invite-tokens")
+async def api_list_telegram_invite_tokens(request: Request) -> dict[str, Any]:
+    user = current_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    tokens = await asyncio.to_thread(list_invite_tokens)
+    # Only return token metadata needed by admin panel.
+    return {
+        "count": len(tokens),
+        "tokens": [
+            {
+                "token": t.get("token"),
+                "createdAt": t.get("createdAt"),
+                "expiresAt": t.get("expiresAt"),
+                "maxUses": t.get("maxUses"),
+                "usedCount": t.get("usedCount"),
+                "revoked": t.get("revoked", False),
+            }
+            for t in tokens
+        ],
+    }
+
+
+@app.post("/api/telegram/invite-token")
+async def api_create_telegram_invite_token(body: TelegramInviteCreateBody, request: Request) -> dict[str, Any]:
+    user = current_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    token = await asyncio.to_thread(create_invite_token, body.expiresInMinutes, body.maxUses)
+    return {"status": "success", "token": token}
+
+
+@app.post("/api/telegram/invite-token/revoke")
+async def api_revoke_telegram_invite_token(body: TelegramInviteRevokeBody, request: Request) -> dict[str, Any]:
+    user = current_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    ok = await asyncio.to_thread(revoke_invite_token, body.token)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Token not found or already revoked")
+    return {"status": "success", "revoked": True}
+
+
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request) -> dict[str, Any]:
     try:
@@ -1461,20 +1648,88 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     if chat_id is None:
         return {"status": "ignored", "reason": "no chat id"}
 
-    try:
-        added = await asyncio.to_thread(save_user, int(chat_id))
-    except Exception:
-        raise HTTPException(status_code=500, detail="Failed to save chat id")
-
     text = (message.get("text") or "").strip().lower()
-    if TELEGRAM_ALERTS_ENABLED and TELEGRAM_BOT_TOKEN and text.startswith("/start"):
-        welcome = (
-            "✅ You are subscribed to Honeypot alerts.\n"
-            "You will receive scam detection alerts automatically."
-        )
-        await _send_telegram_message_to_chat(int(chat_id), welcome)
+    lower_text = text.lower()
+    chat_id_int = int(chat_id)
+    already_registered = is_registered_user(chat_id_int)
 
-    return {"status": "ok", "chatId": int(chat_id), "registered": added}
+    if TELEGRAM_ALERTS_ENABLED and TELEGRAM_BOT_TOKEN:
+        if lower_text.startswith("/start"):
+            if already_registered:
+                await _send_telegram_message_to_chat(
+                    chat_id_int,
+                    "✅ You are already subscribed to Honeypot alerts.",
+                )
+                return {"status": "ok", "chatId": chat_id_int, "registered": True}
+
+            await _send_telegram_message_to_chat(
+                chat_id_int,
+                (
+                    "🔐 Access protected.\n"
+                    "Please authenticate using:\n"
+                    "/auth <INVITE_TOKEN>"
+                ),
+            )
+            return {"status": "ok", "chatId": chat_id_int, "registered": False, "authRequired": True}
+
+        if lower_text.startswith("/auth"):
+            parts = (message.get("text") or "").strip().split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                await _send_telegram_message_to_chat(
+                    chat_id_int,
+                    "❌ Missing token. Use: /auth <INVITE_TOKEN>",
+                )
+                return {"status": "ok", "chatId": chat_id_int, "registered": already_registered, "auth": "missing"}
+
+            submitted = parts[1].strip()
+            token_ok, token_reason = await asyncio.to_thread(consume_invite_token, submitted)
+            master_key_ok = submitted == TELEGRAM_ACCESS_KEY
+            if not token_ok and not master_key_ok:
+                reason_to_message = {
+                    "invalid": "❌ Invalid invite token. Access denied.",
+                    "used": "❌ Invite token already used.",
+                    "expired": "❌ Invite token expired.",
+                    "revoked": "❌ Invite token revoked.",
+                    "missing": "❌ Missing invite token.",
+                }
+                await _send_telegram_message_to_chat(
+                    chat_id_int,
+                    reason_to_message.get(token_reason, "❌ Authentication failed."),
+                )
+                return {
+                    "status": "ok",
+                    "chatId": chat_id_int,
+                    "registered": already_registered,
+                    "auth": "failed",
+                    "reason": token_reason,
+                }
+
+            try:
+                added = await asyncio.to_thread(save_user, chat_id_int)
+            except Exception:
+                raise HTTPException(status_code=500, detail="Failed to save chat id")
+
+            await _send_telegram_message_to_chat(
+                chat_id_int,
+                "✅ Authentication successful. You are now subscribed to Honeypot alerts.",
+            )
+            return {
+                "status": "ok",
+                "chatId": chat_id_int,
+                "registered": True,
+                "newlyRegistered": added,
+                "auth": "success",
+                "method": "token" if token_ok else "master_key",
+            }
+
+        if not already_registered:
+            await _send_telegram_message_to_chat(
+                chat_id_int,
+                "🔐 Not authorized. Send /start and then /auth <INVITE_TOKEN> to subscribe.",
+            )
+            return {"status": "ok", "chatId": chat_id_int, "registered": False, "authRequired": True}
+
+    return {"status": "ok", "chatId": chat_id_int, "registered": already_registered}
 
 
 @app.websocket("/ws/live")

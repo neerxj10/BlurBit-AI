@@ -147,6 +147,27 @@
             <h3>Live Events</h3>
             <ul id="eventsList" class="list"></ul>
           </div>
+
+          <div id="telegramAdminPanel" class="admin-panel hidden">
+            <h3>Telegram Admin</h3>
+            <div class="admin-grid">
+              <label>
+                Expires (min)
+                <input id="inviteExpires" type="number" min="1" max="1440" value="10" />
+              </label>
+              <label>
+                Max Uses
+                <input id="inviteMaxUses" type="number" min="1" max="5" value="1" />
+              </label>
+            </div>
+            <div class="admin-actions">
+              <button id="generateInviteBtn" type="button">Generate Invite Token</button>
+              <button id="refreshInviteBtn" class="secondary" type="button">Refresh</button>
+            </div>
+            <p id="inviteStatus" class="muted">Admin access required.</p>
+            <pre id="latestInviteToken" class="token-box">No token generated yet.</pre>
+            <ul id="inviteTokenList" class="list"></ul>
+          </div>
         </div>
       </section>
 

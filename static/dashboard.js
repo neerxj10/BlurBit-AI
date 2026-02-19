@@ -2,6 +2,10 @@ const state = {
   sessions: [],
   selectedSessionId: "",
 };
+const inviteState = {
+  isAdmin: false,
+  tokens: [],
+};
 let wsPingTimer = null;
 const GAUGE_CIRCUMFERENCE = 2 * Math.PI * 48;
 
@@ -25,6 +29,7 @@ function getVerdictClass(verdict = "") {
 
 function addEvent(message) {
   const list = document.getElementById("eventsList");
+  if (!list) return;
   const li = document.createElement("li");
   li.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
   list.prepend(li);
@@ -275,6 +280,158 @@ function renderSessions() {
   }
 }
 
+function setInviteStatus(message, isError = false) {
+  const status = document.getElementById("inviteStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.style.color = isError ? "#ff6e94" : "";
+}
+
+function formatTs(ts) {
+  if (!ts) return "--";
+  return new Date(Number(ts) * 1000).toLocaleString();
+}
+
+function renderInviteTokens() {
+  const panel = document.getElementById("telegramAdminPanel");
+  const list = document.getElementById("inviteTokenList");
+  const latest = document.getElementById("latestInviteToken");
+  if (!panel || !list || !latest) return;
+
+  if (!inviteState.isAdmin) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+
+  const tokens = [...inviteState.tokens].sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+  latest.textContent = tokens.length ? tokens[0].token : "No token generated yet.";
+  list.innerHTML = "";
+
+  tokens.slice(0, 10).forEach((token) => {
+    const li = document.createElement("li");
+    const expires = token.expiresAt ? formatTs(token.expiresAt) : "never";
+    const meta = `Uses: ${token.usedCount || 0}/${token.maxUses || 1} | Expires: ${expires} | Revoked: ${token.revoked ? "Yes" : "No"}`;
+    li.innerHTML = `
+      <div>${token.token}</div>
+      <div class="muted">${meta}</div>
+      ${token.revoked ? "" : `<button class="invite-revoke-btn secondary" data-token="${token.token}" type="button">Revoke</button>`}
+    `;
+    list.appendChild(li);
+  });
+
+  if (!tokens.length) {
+    const li = document.createElement("li");
+    li.textContent = "No invite tokens created yet.";
+    list.appendChild(li);
+  }
+}
+
+async function fetchInviteTokens({ silent = false } = {}) {
+  const panel = document.getElementById("telegramAdminPanel");
+  if (!panel) return;
+  try {
+    const res = await fetch("/api/telegram/invite-tokens");
+    if (res.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+    if (res.status === 403) {
+      inviteState.isAdmin = false;
+      renderInviteTokens();
+      return;
+    }
+    if (!res.ok) {
+      if (!silent) setInviteStatus("Failed to load invite tokens.", true);
+      return;
+    }
+    const data = await res.json();
+    inviteState.isAdmin = true;
+    inviteState.tokens = Array.isArray(data.tokens) ? data.tokens : [];
+    renderInviteTokens();
+    if (!silent) setInviteStatus("Invite tokens loaded.");
+  } catch {
+    if (!silent) setInviteStatus("Failed to load invite tokens.", true);
+  }
+}
+
+async function createInviteToken() {
+  const expiresEl = document.getElementById("inviteExpires");
+  const maxUsesEl = document.getElementById("inviteMaxUses");
+  const expiresInMinutes = Math.max(1, Number(expiresEl?.value || 10));
+  const maxUses = Math.max(1, Number(maxUsesEl?.value || 1));
+
+  setInviteStatus("Generating token...");
+  try {
+    const res = await fetch("/api/telegram/invite-token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expiresInMinutes, maxUses }),
+    });
+
+    if (res.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+    if (res.status === 403) {
+      setInviteStatus("Admin access required.", true);
+      return;
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setInviteStatus(err.detail || "Failed to generate token.", true);
+      return;
+    }
+
+    const data = await res.json();
+    setInviteStatus("Token generated successfully.");
+    const latest = document.getElementById("latestInviteToken");
+    if (latest && data.token) latest.textContent = data.token;
+    await fetchInviteTokens({ silent: true });
+  } catch {
+    setInviteStatus("Failed to generate token.", true);
+  }
+}
+
+async function revokeInviteToken(token) {
+  setInviteStatus("Revoking token...");
+  try {
+    const res = await fetch("/api/telegram/invite-token/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setInviteStatus(err.detail || "Failed to revoke token.", true);
+      return;
+    }
+    setInviteStatus("Token revoked.");
+    await fetchInviteTokens({ silent: true });
+  } catch {
+    setInviteStatus("Failed to revoke token.", true);
+  }
+}
+
+function setupInvitePanel() {
+  const generateBtn = document.getElementById("generateInviteBtn");
+  const refreshBtn = document.getElementById("refreshInviteBtn");
+  const tokenList = document.getElementById("inviteTokenList");
+  if (!generateBtn || !refreshBtn || !tokenList) return;
+
+  generateBtn.addEventListener("click", createInviteToken);
+  refreshBtn.addEventListener("click", () => fetchInviteTokens());
+  tokenList.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (!target.classList.contains("invite-revoke-btn")) return;
+    const token = target.dataset.token;
+    if (!token) return;
+    revokeInviteToken(token);
+  });
+}
+
 function connectWebSocket() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws/live`);
@@ -331,7 +488,9 @@ function connectWebSocket() {
 window.addEventListener("resize", () => fetchOverview());
 
 (async function init() {
+  setupInvitePanel();
   await Promise.all([fetchOverview(), fetchSessions()]);
+  await fetchInviteTokens({ silent: true });
   connectWebSocket();
   setInterval(() => {
     fetchOverview();
