@@ -248,6 +248,9 @@ sessions: dict[str, dict[str, Any]] = {}
 sessions_lock = asyncio.Lock()
 telegram_users_file_lock = threading.Lock()
 telegram_invites_file_lock = threading.Lock()
+telegram_updates_lock = threading.Lock()
+processed_telegram_updates: dict[str, int] = {}
+TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS = int(os.getenv("TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS", "600"))
 
 
 class ConnectionManager:
@@ -492,6 +495,40 @@ def extract_auth_token_from_message(raw_text: str) -> str:
         return text
 
     return ""
+
+
+def is_duplicate_telegram_update(payload: dict[str, Any]) -> bool:
+    """
+    Return True if this Telegram update was already processed recently.
+    Uses update_id when available; falls back to chat_id/message_id.
+    """
+    key: str | None = None
+    update_id = payload.get("update_id")
+    if update_id is not None:
+        key = f"u:{update_id}"
+    else:
+        msg = payload.get("message") or payload.get("edited_message") or {}
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        message_id = msg.get("message_id")
+        if chat_id is not None and message_id is not None:
+            key = f"m:{chat_id}:{message_id}"
+
+    if not key:
+        return False
+
+    now = int(time.time())
+    with telegram_updates_lock:
+        cutoff = now - max(60, TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS)
+        expired = [k for k, ts in processed_telegram_updates.items() if ts < cutoff]
+        for k in expired:
+            processed_telegram_updates.pop(k, None)
+
+        if key in processed_telegram_updates:
+            return True
+
+        processed_telegram_updates[key] = now
+        return False
 
 
 async def send_telegram_message(text: str) -> bool:
@@ -1671,7 +1708,13 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    message = data.get("message") or data.get("edited_message") or {}
+    if is_duplicate_telegram_update(data):
+        return {"status": "ignored", "reason": "duplicate update"}
+
+    message = data.get("message") or {}
+    if not message:
+        return {"status": "ignored", "reason": "no message"}
+
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
     if chat_id is None:
