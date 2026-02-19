@@ -57,11 +57,13 @@ GOOGLE_CLIENT_ID = (os.getenv("GOOGLE_CLIENT_ID") or "").strip().strip('"').stri
 GOOGLE_CLIENT_SECRET = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip().strip('"').strip("'")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 EVALUATION_SCENARIOS_FILE = Path(os.getenv("EVALUATION_SCENARIOS_FILE", str(Path.cwd() / "evaluation" / "sample_scenarios.json")))
+ASSET_VERSION = os.getenv("ASSET_VERSION", str(int(time.time())))
 
 app = FastAPI(title="Agentic Honeypot AI (Dashboard Edition)")
 client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
 
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["asset_version"] = ASSET_VERSION
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
