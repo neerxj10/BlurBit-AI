@@ -213,3 +213,4 @@ sandbox_shots/
 *.db-wal
 users.json
 telegram_invite_tokens.json
+telegram_access_requests.json

@@ -568,6 +568,35 @@ tbody tr:hover {
   gap: 6px;
 }
 
+.admin-subtitle {
+  margin: 12px 0 8px;
+  font-size: 0.86rem;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+}
+
+.request-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.request-actions button {
+  border: 1px solid rgba(52, 245, 190, 0.35);
+  border-radius: 8px;
+  background: linear-gradient(90deg, #34f5be, #3de8ff);
+  color: #03121f;
+  font-weight: 700;
+  font-size: 0.72rem;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.request-actions button.reject {
+  border-color: rgba(255, 110, 148, 0.4);
+  background: rgba(40, 10, 20, 0.85);
+  color: #ffdce7;
+}
+
 .token-box {
   margin: 8px 0;
   max-height: 120px;

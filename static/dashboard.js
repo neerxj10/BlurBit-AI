@@ -5,6 +5,7 @@ const state = {
 const inviteState = {
   isAdmin: false,
   tokens: [],
+  requests: [],
 };
 let wsPingTimer = null;
 const GAUGE_CIRCUMFERENCE = 2 * Math.PI * 48;
@@ -327,6 +328,38 @@ function renderInviteTokens() {
   }
 }
 
+function renderAccessRequests() {
+  const list = document.getElementById("accessRequestList");
+  if (!list) return;
+  list.innerHTML = "";
+
+  const requests = [...inviteState.requests];
+  requests.sort((a, b) => Number(b.lastRequestedAt || 0) - Number(a.lastRequestedAt || 0));
+
+  requests.slice(0, 15).forEach((req) => {
+    const chatId = Number(req.chatId || 0);
+    const name = req.fullName || req.username || `chat:${chatId}`;
+    const meta = `chatId: ${chatId} | requests: ${req.requestCount || 1} | last: ${formatTs(req.lastRequestedAt)}`;
+
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <div>${name}</div>
+      <div class="muted">${meta}</div>
+      <div class="request-actions">
+        <button class="approve-request-btn" data-chat-id="${chatId}" type="button">Approve</button>
+        <button class="reject request-reject-btn" data-chat-id="${chatId}" type="button">Reject</button>
+      </div>
+    `;
+    list.appendChild(li);
+  });
+
+  if (!requests.length) {
+    const li = document.createElement("li");
+    li.textContent = "No pending access requests.";
+    list.appendChild(li);
+  }
+}
+
 async function fetchInviteTokens({ silent = false } = {}) {
   const panel = document.getElementById("telegramAdminPanel");
   if (!panel) return;
@@ -349,9 +382,33 @@ async function fetchInviteTokens({ silent = false } = {}) {
     inviteState.isAdmin = true;
     inviteState.tokens = Array.isArray(data.tokens) ? data.tokens : [];
     renderInviteTokens();
+    await fetchAccessRequests({ silent: true });
     if (!silent) setInviteStatus("Invite tokens loaded.");
   } catch {
     if (!silent) setInviteStatus("Failed to load invite tokens.", true);
+  }
+}
+
+async function fetchAccessRequests({ silent = false } = {}) {
+  if (!inviteState.isAdmin) return;
+  try {
+    const res = await fetch("/api/telegram/access-requests");
+    if (res.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+    if (res.status === 403) {
+      return;
+    }
+    if (!res.ok) {
+      if (!silent) setInviteStatus("Failed to load access requests.", true);
+      return;
+    }
+    const data = await res.json();
+    inviteState.requests = Array.isArray(data.requests) ? data.requests : [];
+    renderAccessRequests();
+  } catch {
+    if (!silent) setInviteStatus("Failed to load access requests.", true);
   }
 }
 
@@ -414,11 +471,57 @@ async function revokeInviteToken(token) {
   }
 }
 
+async function approveAccessRequest(chatId) {
+  const expiresEl = document.getElementById("inviteExpires");
+  const maxUsesEl = document.getElementById("inviteMaxUses");
+  const expiresInMinutes = Math.max(1, Number(expiresEl?.value || 10));
+  const maxUses = Math.max(1, Number(maxUsesEl?.value || 1));
+
+  setInviteStatus(`Approving request for ${chatId}...`);
+  try {
+    const res = await fetch("/api/telegram/access-request/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId: Number(chatId), expiresInMinutes, maxUses }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setInviteStatus(err.detail || "Failed to approve access request.", true);
+      return;
+    }
+    setInviteStatus(`Approved ${chatId} and token sent on Telegram.`);
+    await Promise.all([fetchInviteTokens({ silent: true }), fetchAccessRequests({ silent: true })]);
+  } catch {
+    setInviteStatus("Failed to approve access request.", true);
+  }
+}
+
+async function rejectAccessRequest(chatId) {
+  setInviteStatus(`Rejecting request for ${chatId}...`);
+  try {
+    const res = await fetch("/api/telegram/access-request/reject", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chatId: Number(chatId) }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      setInviteStatus(err.detail || "Failed to reject access request.", true);
+      return;
+    }
+    setInviteStatus(`Rejected request for ${chatId}.`);
+    await fetchAccessRequests({ silent: true });
+  } catch {
+    setInviteStatus("Failed to reject access request.", true);
+  }
+}
+
 function setupInvitePanel() {
   const generateBtn = document.getElementById("generateInviteBtn");
   const refreshBtn = document.getElementById("refreshInviteBtn");
   const tokenList = document.getElementById("inviteTokenList");
-  if (!generateBtn || !refreshBtn || !tokenList) return;
+  const accessRequestList = document.getElementById("accessRequestList");
+  if (!generateBtn || !refreshBtn || !tokenList || !accessRequestList) return;
 
   generateBtn.addEventListener("click", createInviteToken);
   refreshBtn.addEventListener("click", () => fetchInviteTokens());
@@ -429,6 +532,20 @@ function setupInvitePanel() {
     const token = target.dataset.token;
     if (!token) return;
     revokeInviteToken(token);
+  });
+
+  accessRequestList.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const chatId = target.dataset.chatId;
+    if (!chatId) return;
+    if (target.classList.contains("approve-request-btn")) {
+      approveAccessRequest(chatId);
+      return;
+    }
+    if (target.classList.contains("request-reject-btn")) {
+      rejectAccessRequest(chatId);
+    }
   });
 }
 

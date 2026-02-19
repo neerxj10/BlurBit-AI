@@ -46,6 +46,9 @@ TELEGRAM_ALERTS_ENABLED = os.getenv("TELEGRAM_ALERTS_ENABLED", "true").lower() =
 TELEGRAM_USERS_FILE = Path(os.getenv("TELEGRAM_USERS_FILE", str(Path.cwd() / "users.json")))
 TELEGRAM_ACCESS_KEY = os.getenv("TELEGRAM_ACCESS_KEY", API_KEY).strip()
 TELEGRAM_INVITE_TOKENS_FILE = Path(os.getenv("TELEGRAM_INVITE_TOKENS_FILE", str(Path.cwd() / "telegram_invite_tokens.json")))
+TELEGRAM_ACCESS_REQUESTS_FILE = Path(
+    os.getenv("TELEGRAM_ACCESS_REQUESTS_FILE", str(Path.cwd() / "telegram_access_requests.json"))
+)
 TELEGRAM_ADMIN_EMAILS = {x.strip().lower() for x in (os.getenv("TELEGRAM_ADMIN_EMAILS", "")).split(",") if x.strip()}
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", str(Path.cwd() / "sandbox_shots")))
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -248,6 +251,7 @@ sessions: dict[str, dict[str, Any]] = {}
 sessions_lock = asyncio.Lock()
 telegram_users_file_lock = threading.Lock()
 telegram_invites_file_lock = threading.Lock()
+telegram_access_requests_file_lock = threading.Lock()
 telegram_updates_lock = threading.Lock()
 processed_telegram_updates: dict[str, int] = {}
 TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS = int(os.getenv("TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS", "600"))
@@ -364,6 +368,91 @@ def is_admin_user(user: dict[str, Any] | None) -> bool:
     if not email:
         return False
     return email in TELEGRAM_ADMIN_EMAILS if TELEGRAM_ADMIN_EMAILS else False
+
+
+def _load_access_requests() -> list[dict[str, Any]]:
+    if not TELEGRAM_ACCESS_REQUESTS_FILE.exists():
+        return []
+    try:
+        raw = json.loads(TELEGRAM_ACCESS_REQUESTS_FILE.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, list) else []
+    except Exception:
+        return []
+
+
+def _save_access_requests(items: list[dict[str, Any]]) -> None:
+    TELEGRAM_ACCESS_REQUESTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TELEGRAM_ACCESS_REQUESTS_FILE.write_text(json.dumps(items, indent=2), encoding="utf-8")
+
+
+def upsert_access_request(chat_id: int, username: str, full_name: str) -> dict[str, Any]:
+    now = int(time.time())
+    chat_id = int(chat_id)
+    item: dict[str, Any] | None = None
+    with telegram_access_requests_file_lock:
+        items = _load_access_requests()
+        for row in items:
+            if int(row.get("chatId", -1)) == chat_id:
+                row["username"] = username or row.get("username", "")
+                row["fullName"] = full_name or row.get("fullName", "")
+                row["status"] = "pending"
+                row["lastRequestedAt"] = now
+                row["requestCount"] = int(row.get("requestCount", 0) or 0) + 1
+                row.pop("approvedAt", None)
+                row.pop("rejectedAt", None)
+                row.pop("approvedBy", None)
+                item = row
+                break
+        if item is None:
+            item = {
+                "chatId": chat_id,
+                "username": username or "",
+                "fullName": full_name or "",
+                "status": "pending",
+                "requestCount": 1,
+                "createdAt": now,
+                "lastRequestedAt": now,
+            }
+            items.append(item)
+        _save_access_requests(items)
+    return item
+
+
+def list_access_requests(status: str | None = None) -> list[dict[str, Any]]:
+    status = (status or "").strip().lower()
+    with telegram_access_requests_file_lock:
+        items = _load_access_requests()
+    items.sort(key=lambda x: int(x.get("lastRequestedAt", 0)), reverse=True)
+    if not status:
+        return items
+    return [x for x in items if str(x.get("status", "")).lower() == status]
+
+
+def update_access_request_status(chat_id: int, status: str, admin_email: str) -> dict[str, Any] | None:
+    now = int(time.time())
+    chat_id = int(chat_id)
+    status = status.strip().lower()
+    if status not in {"approved", "rejected", "pending"}:
+        return None
+
+    with telegram_access_requests_file_lock:
+        items = _load_access_requests()
+        for row in items:
+            if int(row.get("chatId", -1)) != chat_id:
+                continue
+            row["status"] = status
+            if status == "approved":
+                row["approvedAt"] = now
+                row["approvedBy"] = admin_email
+                row.pop("rejectedAt", None)
+            elif status == "rejected":
+                row["rejectedAt"] = now
+                row["approvedBy"] = admin_email
+                row.pop("approvedAt", None)
+            row["lastUpdatedAt"] = now
+            _save_access_requests(items)
+            return row
+    return None
 
 
 def _load_invite_tokens() -> list[dict[str, Any]]:
@@ -1041,6 +1130,16 @@ class TelegramInviteRevokeBody(BaseModel):
     token: str
 
 
+class TelegramAccessRequestApproveBody(BaseModel):
+    chatId: int
+    expiresInMinutes: int = 10
+    maxUses: int = 1
+
+
+class TelegramAccessRequestRejectBody(BaseModel):
+    chatId: int
+
+
 # ==========================================================
 # DASHBOARD HELPERS
 # ==========================================================
@@ -1701,6 +1800,73 @@ async def api_revoke_telegram_invite_token(body: TelegramInviteRevokeBody, reque
     return {"status": "success", "revoked": True}
 
 
+@app.get("/api/telegram/access-requests")
+async def api_list_telegram_access_requests(request: Request) -> dict[str, Any]:
+    user = current_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    pending = await asyncio.to_thread(list_access_requests, "pending")
+    return {"count": len(pending), "requests": pending}
+
+
+@app.post("/api/telegram/access-request/approve")
+async def api_approve_telegram_access_request(
+    body: TelegramAccessRequestApproveBody, request: Request
+) -> dict[str, Any]:
+    user = current_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    updated = await asyncio.to_thread(update_access_request_status, body.chatId, "approved", user["email"])
+    if not updated:
+        raise HTTPException(status_code=404, detail="Access request not found")
+
+    token_item = await asyncio.to_thread(create_invite_token, body.expiresInMinutes, body.maxUses)
+    token = str(token_item.get("token", "")).strip()
+    if not token:
+        raise HTTPException(status_code=500, detail="Failed to generate invite token")
+
+    sent = await _send_telegram_message_to_chat(
+        int(body.chatId),
+        (
+            "✅ Access request approved.\n"
+            f"Your invite token: {token}\n"
+            "Send one message:\n"
+            f"/start {token}"
+        ),
+    )
+    if not sent:
+        raise HTTPException(status_code=502, detail="Approved but failed to send token to user on Telegram")
+
+    return {"status": "success", "chatId": int(body.chatId), "token": token}
+
+
+@app.post("/api/telegram/access-request/reject")
+async def api_reject_telegram_access_request(
+    body: TelegramAccessRequestRejectBody, request: Request
+) -> dict[str, Any]:
+    user = current_user_from_request(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    updated = await asyncio.to_thread(update_access_request_status, body.chatId, "rejected", user["email"])
+    if not updated:
+        raise HTTPException(status_code=404, detail="Access request not found")
+
+    await _send_telegram_message_to_chat(
+        int(body.chatId),
+        "❌ Access request rejected. Contact admin if you think this is a mistake.",
+    )
+    return {"status": "success", "chatId": int(body.chatId), "rejected": True}
+
+
 @app.post("/telegram-webhook")
 async def telegram_webhook(request: Request) -> dict[str, Any]:
     try:
@@ -1725,6 +1891,10 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     submitted_token = extract_auth_token_from_message(raw_text)
     chat_id_int = int(chat_id)
     already_registered = is_registered_user(chat_id_int)
+    username = str(chat.get("username") or "").strip()
+    first_name = str(chat.get("first_name") or "").strip()
+    last_name = str(chat.get("last_name") or "").strip()
+    full_name = " ".join(x for x in [first_name, last_name] if x).strip()
 
     if TELEGRAM_ALERTS_ENABLED and TELEGRAM_BOT_TOKEN:
         if already_registered:
@@ -1784,10 +1954,12 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
             return {"status": "ok", "chatId": chat_id_int, "registered": already_registered, "auth": "missing"}
 
         if lower_text.startswith("/start"):
+            await asyncio.to_thread(upsert_access_request, chat_id_int, username, full_name)
             await _send_telegram_message_to_chat(
                 chat_id_int,
                 (
                     "🔐 Access protected.\n"
+                    "Request received and sent to admin for approval.\n"
                     "Send token quickly in any one format:\n"
                     "1) /start <INVITE_TOKEN>\n"
                     "2) /auth <INVITE_TOKEN>\n"
@@ -1797,9 +1969,11 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
             return {"status": "ok", "chatId": chat_id_int, "registered": False, "authRequired": True}
 
         if not already_registered:
+            if raw_text:
+                await asyncio.to_thread(upsert_access_request, chat_id_int, username, full_name)
             await _send_telegram_message_to_chat(
                 chat_id_int,
-                "🔐 Not authorized. Send /start <INVITE_TOKEN> or paste your invite token.",
+                "🔐 Not authorized. Request logged. Send /start <INVITE_TOKEN> or paste your invite token after admin approval.",
             )
             return {"status": "ok", "chatId": chat_id_int, "registered": False, "authRequired": True}
 
