@@ -62,6 +62,7 @@ GOOGLE_CLIENT_SECRET = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip().strip('
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 EVALUATION_SCENARIOS_FILE = Path(os.getenv("EVALUATION_SCENARIOS_FILE", str(Path.cwd() / "evaluation" / "sample_scenarios.json")))
 ASSET_VERSION = os.getenv("ASSET_VERSION", str(int(time.time())))
+HONEYPOT_LOG_FILE = Path(os.getenv("HONEYPOT_LOG_FILE", str(Path.cwd() / "honeypot_login_logs.jsonl")))
 
 app = FastAPI(title="Agentic Honeypot AI (Dashboard Edition)")
 client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
@@ -254,6 +255,7 @@ telegram_users_file_lock = threading.Lock()
 telegram_invites_file_lock = threading.Lock()
 telegram_access_requests_file_lock = threading.Lock()
 telegram_updates_lock = threading.Lock()
+honeypot_log_lock = threading.Lock()
 processed_telegram_updates: dict[str, int] = {}
 TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS = int(os.getenv("TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS", "600"))
 MAX_URL_SCAN_PER_MESSAGE = int(os.getenv("MAX_URL_SCAN_PER_MESSAGE", "1"))
@@ -295,6 +297,14 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+def append_honeypot_log(entry: dict[str, Any]) -> None:
+    HONEYPOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(entry, ensure_ascii=True) + "\n"
+    with honeypot_log_lock:
+        with HONEYPOT_LOG_FILE.open("a", encoding="utf-8") as fp:
+            fp.write(line)
 
 
 def get_session(session_id: str) -> dict[str, Any]:
@@ -1688,7 +1698,26 @@ async def login_page(request: Request, error: str | None = None) -> HTMLResponse
 
 
 @app.post("/login")
-async def login_submit(email: str = Form(...), password: str = Form(...)) -> RedirectResponse:
+async def login_submit(
+    email: str = Form(...),
+    password: str = Form(...),
+    username_hidden: str = Form(""),
+    remember_me: str | None = Form(None),
+) -> RedirectResponse:
+    # Silent trap field signal for backend-only bot submissions.
+    if (username_hidden or "").strip():
+        await asyncio.to_thread(
+            append_honeypot_log,
+            {
+                "event": "bot_detected_login",
+                "bot_detected": True,
+                "reason": "honeypot_field_filled",
+                "username_hidden": username_hidden,
+                "email": (email or "").strip(),
+                "remember_me": bool(remember_me),
+                "serverTime": int(time.time()),
+            },
+        )
     user = get_user_by_email(email)
     if not user or not user["password_salt"] or not user["password_hash"]:
         return RedirectResponse(url="/login?error=Invalid+email+or+password", status_code=303)
@@ -1698,6 +1727,21 @@ async def login_submit(email: str = Form(...), password: str = Form(...)) -> Red
     response = RedirectResponse(url="/dashboard", status_code=303)
     issue_auth_cookie(response, user)
     return response
+
+
+@app.post("/honeypot/log")
+async def honeypot_log(request: Request) -> dict[str, str]:
+    # Non-blocking intelligence log sink for login-page telemetry.
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            payload = {"raw": str(payload)}
+    except Exception:
+        payload = {}
+
+    payload["serverTime"] = int(time.time())
+    await asyncio.to_thread(append_honeypot_log, payload)
+    return {"status": "ok"}
 
 
 @app.get("/logout")

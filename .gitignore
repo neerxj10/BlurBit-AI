@@ -188,6 +188,9 @@ cython_debug/
 #  you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
+# macOS
+.DS_Store
+
 # Ruff stuff:
 .ruff_cache/
 
@@ -214,3 +217,4 @@ sandbox_shots/
 users.json
 telegram_invite_tokens.json
 telegram_access_requests.json
+honeypot_login_logs.jsonl
