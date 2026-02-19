@@ -146,6 +146,12 @@ body {
   padding: 4px 10px;
 }
 
+.user-strip a.quick-link {
+  color: #34f5be;
+  border-color: rgba(52, 245, 190, 0.35);
+  background: rgba(52, 245, 190, 0.1);
+}
+
 .user-strip a:hover {
   background: rgba(61, 232, 255, 0.12);
 }

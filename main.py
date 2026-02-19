@@ -256,6 +256,13 @@ telegram_access_requests_file_lock = threading.Lock()
 telegram_updates_lock = threading.Lock()
 processed_telegram_updates: dict[str, int] = {}
 TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS = int(os.getenv("TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS", "600"))
+MAX_URL_SCAN_PER_MESSAGE = int(os.getenv("MAX_URL_SCAN_PER_MESSAGE", "1"))
+PLAYWRIGHT_GOTO_TIMEOUT_MS = int(os.getenv("PLAYWRIGHT_GOTO_TIMEOUT_MS", "8000"))
+LINK_SCAN_TIMEOUT_SECONDS = float(os.getenv("LINK_SCAN_TIMEOUT_SECONDS", "10"))
+HONEY_POT_STRICT_RESPONSE = os.getenv("HONEY_POT_STRICT_RESPONSE", "true").lower() == "true"
+OPENAI_CHAT_TIMEOUT_SECONDS = float(os.getenv("OPENAI_CHAT_TIMEOUT_SECONDS", "8"))
+OLLAMA_CHAT_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_CHAT_TIMEOUT_SECONDS", "8"))
+REPLY_TIMEOUT_SECONDS = float(os.getenv("REPLY_TIMEOUT_SECONDS", "9"))
 
 
 class ConnectionManager:
@@ -296,6 +303,7 @@ def get_session(session_id: str) -> dict[str, Any]:
             "createdAt": int(time.time()),
             "updatedAt": int(time.time()),
             "telegramScreenshotSent": False,
+            "callbackSent": False,
             "scamProbability": 0.0,
             "riskLevel": "LOW",
             "riskReasons": [],
@@ -305,6 +313,10 @@ def get_session(session_id: str) -> dict[str, Any]:
                 "upiIds": [],
                 "phishingLinks": [],
                 "phoneNumbers": [],
+                "emailAddresses": [],
+                "caseIds": [],
+                "policyNumbers": [],
+                "orderNumbers": [],
                 "suspiciousKeywords": [],
                 "linkReports": [],
             },
@@ -814,7 +826,7 @@ async def sandbox_scan_url(url: str, session_id: str) -> dict[str, Any]:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
             page = await browser.new_page()
-            await page.goto(url, timeout=12000, wait_until="domcontentloaded")
+            await page.goto(url, timeout=PLAYWRIGHT_GOTO_TIMEOUT_MS, wait_until="domcontentloaded")
 
             html = (await page.content()).lower()
             title = (await page.title()).strip()
@@ -857,7 +869,10 @@ async def scan_links(text: str, intel: dict[str, Any], session_id: str) -> tuple
     phishing = False
     reports: list[dict[str, Any]] = []
 
-    for url in urls:
+    to_scan = urls[: max(1, MAX_URL_SCAN_PER_MESSAGE)]
+    skipped = urls[len(to_scan) :]
+
+    for url in to_scan:
         report = await sandbox_scan_url(url, session_id)
         intel["phishingLinks"].append(url)
         intel["linkReports"].append(report)
@@ -865,6 +880,19 @@ async def scan_links(text: str, intel: dict[str, Any], session_id: str) -> tuple
 
         if report.get("verdict") == "PHISHING":
             phishing = True
+
+    for skipped_url in skipped:
+        report = {
+            "url": skipped_url,
+            "verdict": "UNCHECKED",
+            "title": "",
+            "keywords": [],
+            "timestamp": int(time.time()),
+            "note": f"Skipped deep scan: max {MAX_URL_SCAN_PER_MESSAGE} links/message",
+        }
+        intel["phishingLinks"].append(skipped_url)
+        intel["linkReports"].append(report)
+        reports.append(report)
 
     return phishing, reports
 
@@ -890,6 +918,10 @@ def extract_intel(text: str, intel: dict[str, Any]) -> dict[str, Any]:
     intel["bankAccounts"] += re.findall(r"\b\d{12,18}\b", text)
     intel["upiIds"] += re.findall(r"\b[\w.-]+@[\w.-]+\b", text)
     intel["phoneNumbers"] += re.findall(r"(?:\+91[- ]?)?[6-9]\d{4}[- ]?\d{5}", text)
+    intel["emailAddresses"] += re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", text)
+    intel["caseIds"] += re.findall(r"\b(?:case|ticket|ref|reference)[-:\s]*([A-Za-z0-9-]{4,})\b", text, re.IGNORECASE)
+    intel["policyNumbers"] += re.findall(r"\b(?:policy)[-:\s]*([A-Za-z0-9-]{4,})\b", text, re.IGNORECASE)
+    intel["orderNumbers"] += re.findall(r"\b(?:order)[-:\s#]*([A-Za-z0-9-]{4,})\b", text, re.IGNORECASE)
 
     for word in ["urgent", "verify", "blocked", "otp"]:
         if word in text.lower():
@@ -973,6 +1005,7 @@ Conversation:
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=120,
                 temperature=0.6,
+                timeout=OPENAI_CHAT_TIMEOUT_SECONDS,
             )
             return res.choices[0].message.content.strip()
         except Exception:
@@ -980,7 +1013,7 @@ Conversation:
 
     try:
         payload = {"model": "llama3", "prompt": prompt, "stream": False}
-        with httpx.Client(timeout=30) as http:
+        with httpx.Client(timeout=max(2.0, OLLAMA_CHAT_TIMEOUT_SECONDS)) as http:
             response = http.post(OLLAMA_URL, json=payload)
             response.raise_for_status()
             return response.json().get("response", "").strip() or fallback_reply(language)
@@ -1081,11 +1114,28 @@ async def send_telegram_alert(
 
 
 async def send_callback(session_id: str, history: list[dict[str, Any]], intel: dict[str, Any], scam_detected: bool) -> None:
+    session = sessions.get(session_id, {})
+    created_at = int(session.get("createdAt", int(time.time())))
+    updated_at = int(session.get("updatedAt", int(time.time())))
+    engagement_duration = max(1, updated_at - created_at)
+
+    extracted = {
+        "phoneNumbers": intel.get("phoneNumbers", []),
+        "bankAccounts": intel.get("bankAccounts", []),
+        "upiIds": intel.get("upiIds", []),
+        "phishingLinks": intel.get("phishingLinks", []),
+        "emailAddresses": intel.get("emailAddresses", []),
+        "caseIds": intel.get("caseIds", []),
+        "policyNumbers": intel.get("policyNumbers", []),
+        "orderNumbers": intel.get("orderNumbers", []),
+    }
+
     payload = {
         "sessionId": session_id,
         "scamDetected": scam_detected,
         "totalMessagesExchanged": len(history),
-        "extractedIntelligence": intel,
+        "engagementDurationSeconds": engagement_duration,
+        "extractedIntelligence": extracted,
         "agentNotes": "Agent engaged scammer",
     }
 
@@ -1119,7 +1169,7 @@ async def send_callback(session_id: str, history: list[dict[str, Any]], intel: d
 class Message(BaseModel):
     sender: str
     text: str
-    timestamp: int | None = None
+    timestamp: str | int | None = None
 
 
 class RequestBody(BaseModel):
@@ -1328,12 +1378,21 @@ async def honeypot(
 
     async with sessions_lock:
         session = get_session(body.sessionId)
+        if not session["history"] and body.conversationHistory:
+            # Evaluator may provide full history each turn; bootstrap session context from it.
+            session["history"].extend(body.conversationHistory[:30])
         session["history"].append(body.message.model_dump())
         session["updatedAt"] = int(time.time())
         session["intel"] = extract_intel(body.message.text, session["intel"])
 
     language = detect_language(body.message.text)
-    phishing, reports = await scan_links(body.message.text, session["intel"], body.sessionId)
+    try:
+        phishing, reports = await asyncio.wait_for(
+            scan_links(body.message.text, session["intel"], body.sessionId),
+            timeout=max(2.0, LINK_SCAN_TIMEOUT_SECONDS),
+        )
+    except Exception:
+        phishing, reports = False, []
     score = rule_score(body.message.text)
 
     # Real-time production scoring engine integration.
@@ -1375,13 +1434,27 @@ async def honeypot(
 
     if phishing:
         reply = "Yeh link suspicious lag raha hai. Main ise nahi kholunga." if language == "hi" else "That link looks suspicious. I will not open it."
-        background_tasks.add_task(send_callback, body.sessionId, session["history"], session["intel"], True)
+        async with sessions_lock:
+            if not session.get("callbackSent", False):
+                session["callbackSent"] = True
+                background_tasks.add_task(send_callback, body.sessionId, session["history"], session["intel"], True)
     else:
-        reply = generate_reply(session["history"], language)
+        try:
+            reply = await asyncio.wait_for(
+                asyncio.to_thread(generate_reply, session["history"], language),
+                timeout=max(2.0, REPLY_TIMEOUT_SECONDS),
+            )
+        except Exception:
+            reply = fallback_reply(language)
         async with sessions_lock:
             session["history"].append({"sender": "honeypot", "text": reply, "timestamp": int(time.time())})
             session["updatedAt"] = int(time.time())
-            if (score > 0.2 or float(scoring_result["scam_probability"]) >= 65.0) and len(session["history"]) >= 8:
+            if (
+                not session.get("callbackSent", False)
+                and (score > 0.2 or float(scoring_result["scam_probability"]) >= 65.0)
+                and len(session["history"]) >= 8
+            ):
+                session["callbackSent"] = True
                 background_tasks.add_task(send_callback, body.sessionId, session["history"], session["intel"], True)
 
     await manager.broadcast(
@@ -1402,6 +1475,8 @@ async def honeypot(
         }
     )
 
+    if HONEY_POT_STRICT_RESPONSE:
+        return {"status": "success", "reply": reply}
     return {
         "status": "success",
         "reply": reply,
