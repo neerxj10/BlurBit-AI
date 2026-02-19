@@ -516,15 +516,44 @@ async function rejectAccessRequest(chatId) {
   }
 }
 
+async function copyLatestInviteToken() {
+  const latest = document.getElementById("latestInviteToken");
+  if (!latest) return;
+
+  const text = (latest.textContent || "").trim();
+  if (!text || text.toLowerCase().includes("no token generated")) {
+    setInviteStatus("No token to copy yet.", true);
+    return;
+  }
+
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const temp = document.createElement("textarea");
+      temp.value = text;
+      document.body.appendChild(temp);
+      temp.select();
+      document.execCommand("copy");
+      document.body.removeChild(temp);
+    }
+    setInviteStatus("Token copied.");
+  } catch {
+    setInviteStatus("Copy failed. Please copy manually.", true);
+  }
+}
+
 function setupInvitePanel() {
   const generateBtn = document.getElementById("generateInviteBtn");
   const refreshBtn = document.getElementById("refreshInviteBtn");
+  const copyBtn = document.getElementById("copyInviteBtn");
   const tokenList = document.getElementById("inviteTokenList");
   const accessRequestList = document.getElementById("accessRequestList");
-  if (!generateBtn || !refreshBtn || !tokenList || !accessRequestList) return;
+  if (!generateBtn || !refreshBtn || !copyBtn || !tokenList || !accessRequestList) return;
 
   generateBtn.addEventListener("click", createInviteToken);
   refreshBtn.addEventListener("click", () => fetchInviteTokens());
+  copyBtn.addEventListener("click", copyLatestInviteToken);
   tokenList.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
