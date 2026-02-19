@@ -4,48 +4,71 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{% if mode == 'signup' %}Create Account{% else %}Sign In{% endif %} - Honeypot</title>
+    <link rel="icon" type="image/png" href="/static/BlurBitLogo.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Space+Grotesk:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/auth.css" />
+    <link rel="stylesheet" href="/static/auth.css?v={{ asset_version }}" />
   </head>
   <body>
+    <div class="bg"></div>
     <div class="glow g1"></div>
     <div class="glow g2"></div>
 
     <main class="auth-shell">
       <section class="auth-card">
-        <p class="eyebrow">Agentic Honeypot</p>
+        <p class="eyebrow">Blur Bit Agentic Honeypot</p>
         <h1>{% if mode == 'signup' %}Create your account{% else %}Sign in to dashboard{% endif %}</h1>
 
-        {% if error %}
-        <p class="error">{{ error }}</p>
-        {% endif %}
+        {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
-        <form method="post" action="/{% if mode == 'signup' %}signup{% else %}login{% endif %}" class="form">
+        <form
+          id="authForm"
+          method="post"
+          action="/{% if mode == 'signup' %}signup{% else %}login{% endif %}"
+          class="form"
+          data-mode="{{ mode }}"
+        >
           {% if mode == 'signup' %}
-          <label>
-            Full name
-            <input type="text" name="name" placeholder="Enter name" required />
-          </label>
+          <div class="field">
+            <input id="name" type="text" name="name" placeholder=" " required />
+            <label for="name">Full name</label>
+          </div>
           {% endif %}
 
-          <label>
-            Email
-            <input type="email" name="email" placeholder="you@example.com" required />
-          </label>
+          <div class="field">
+            <input id="email" type="email" name="email" placeholder=" " required />
+            <label for="email">Email</label>
+          </div>
 
-          <label>
-            Password
-            <input type="password" name="password" placeholder="Min 8 characters" required />
-          </label>
+          <div class="field password-field">
+            <input id="password" type="password" name="password" placeholder=" " required />
+            <label for="password">Password</label>
+            <button id="togglePassword" class="icon-btn" type="button" aria-label="Show password">👁</button>
+          </div>
 
-          <button type="submit" class="primary">
-            {% if mode == 'signup' %}Create account{% else %}Sign in{% endif %}
+          {% if mode == 'login' %}
+          <div class="login-row">
+            <label class="remember">
+              <input type="checkbox" id="rememberMe" name="remember_me" />
+              <span>Remember me</span>
+            </label>
+            <a class="mini-link" href="#">Forgot password?</a>
+          </div>
+          {% endif %}
+
+          <div style="display:none;">
+            <input type="text" id="usernameHidden" name="username_hidden" tabindex="-1" autocomplete="off" />
+          </div>
+
+          <button id="submitBtn" type="submit" class="primary">
+            <span id="submitText">{% if mode == 'signup' %}Create account{% else %}Sign in{% endif %}</span>
+            <span id="submitSpinner" class="spinner hidden" aria-hidden="true"></span>
           </button>
+          <p id="authError" class="error hidden"></p>
         </form>
 
         {% if google_enabled %}
@@ -53,7 +76,6 @@
         {% else %}
         <p class="hint">Google sign-in is disabled. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.</p>
         {% endif %}
-        <p class="hint">If Google redirects fail, add the exact callback URL shown in your browser host: `/auth/google/callback`.</p>
 
         <p class="switch">
           {% if mode == 'signup' %}
@@ -64,5 +86,6 @@
         </p>
       </section>
     </main>
+    <script src="/static/login.js?v={{ asset_version }}"></script>
   </body>
 </html>
