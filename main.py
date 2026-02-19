@@ -43,6 +43,7 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 CALLBACK_URL = os.getenv("CALLBACK_URL", "https://hackathon.guvi.in/api/updateHoneyPotFinalResult")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_ALERTS_ENABLED = os.getenv("TELEGRAM_ALERTS_ENABLED", "true").lower() == "true"
+TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
 TELEGRAM_USERS_FILE = Path(os.getenv("TELEGRAM_USERS_FILE", str(Path.cwd() / "users.json")))
 TELEGRAM_ACCESS_KEY = os.getenv("TELEGRAM_ACCESS_KEY", API_KEY).strip()
 TELEGRAM_INVITE_TOKENS_FILE = Path(os.getenv("TELEGRAM_INVITE_TOKENS_FILE", str(Path.cwd() / "telegram_invite_tokens.json")))
@@ -650,7 +651,7 @@ async def send_telegram_message(text: str) -> bool:
     return any(result is True for result in results)
 
 
-async def _send_telegram_message_to_chat(chat_id: int, text: str) -> bool:
+async def _send_telegram_message_to_chat(chat_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> bool:
     if not (TELEGRAM_ALERTS_ENABLED and TELEGRAM_BOT_TOKEN):
         return False
 
@@ -660,6 +661,8 @@ async def _send_telegram_message_to_chat(chat_id: int, text: str) -> bool:
         "text": text,
         "disable_web_page_preview": True,
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
 
     def _post() -> bool:
         try:
@@ -669,6 +672,28 @@ async def _send_telegram_message_to_chat(chat_id: int, text: str) -> bool:
             return False
 
     return await asyncio.to_thread(_post)
+
+
+def _token_inline_keyboard(token: str) -> dict[str, Any]:
+    token = (token or "").strip()
+    buttons: list[dict[str, Any]] = []
+    if TELEGRAM_BOT_USERNAME:
+        buttons.append(
+            {
+                "text": "Use Token",
+                "url": f"https://t.me/{TELEGRAM_BOT_USERNAME}?start={token}",
+            }
+        )
+    # copy_text is supported in newer Telegram Bot API; if unsupported, send will gracefully fallback.
+    buttons.append(
+        {
+            "text": "Copy Token",
+            "copy_text": {
+                "text": token,
+            },
+        }
+    )
+    return {"inline_keyboard": [buttons]}
 
 
 async def send_telegram_screenshot(image_path: str) -> bool:
@@ -1831,15 +1856,16 @@ async def api_approve_telegram_access_request(
     if not token:
         raise HTTPException(status_code=500, detail="Failed to generate invite token")
 
-    sent = await _send_telegram_message_to_chat(
-        int(body.chatId),
-        (
-            "✅ Access request approved.\n"
-            f"Your invite token: {token}\n"
-            "Send one message:\n"
-            f"/start {token}"
-        ),
+    approval_text = (
+        "✅ Access request approved.\n"
+        f"Your invite token: {token}\n"
+        "Tap 'Use Token' or send:\n"
+        f"/start {token}"
     )
+    reply_markup = _token_inline_keyboard(token)
+    sent = await _send_telegram_message_to_chat(int(body.chatId), approval_text, reply_markup=reply_markup)
+    if not sent:
+        sent = await _send_telegram_message_to_chat(int(body.chatId), approval_text)
     if not sent:
         raise HTTPException(status_code=502, detail="Approved but failed to send token to user on Telegram")
 
