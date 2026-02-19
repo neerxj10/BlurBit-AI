@@ -467,6 +467,33 @@ def consume_invite_token(token_value: str) -> tuple[bool, str]:
     return False, "invalid"
 
 
+def extract_auth_token_from_message(raw_text: str) -> str:
+    """
+    Extract invite token from common Telegram inputs:
+    - /auth <TOKEN>
+    - /auth<TOKEN>
+    - /start <TOKEN>
+    - plain TOKEN message
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return ""
+
+    lowered = text.lower()
+    if lowered.startswith("/auth"):
+        value = text[5:].strip()
+        return value
+
+    if lowered.startswith("/start"):
+        parts = text.split(maxsplit=1)
+        return parts[1].strip() if len(parts) == 2 else ""
+
+    if re.fullmatch(r"[A-Za-z0-9_-]{8,}", text):
+        return text
+
+    return ""
+
+
 async def send_telegram_message(text: str) -> bool:
     if not (TELEGRAM_ALERTS_ENABLED and TELEGRAM_BOT_TOKEN):
         return False
@@ -1650,42 +1677,24 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     if chat_id is None:
         return {"status": "ignored", "reason": "no chat id"}
 
-    text = (message.get("text") or "").strip().lower()
-    lower_text = text.lower()
+    raw_text = (message.get("text") or "").strip()
+    lower_text = raw_text.lower()
+    submitted_token = extract_auth_token_from_message(raw_text)
     chat_id_int = int(chat_id)
     already_registered = is_registered_user(chat_id_int)
 
     if TELEGRAM_ALERTS_ENABLED and TELEGRAM_BOT_TOKEN:
-        if lower_text.startswith("/start"):
-            if already_registered:
+        if already_registered:
+            if lower_text.startswith("/start"):
                 await _send_telegram_message_to_chat(
                     chat_id_int,
                     "✅ You are already subscribed to Honeypot alerts.",
                 )
-                return {"status": "ok", "chatId": chat_id_int, "registered": True}
+            return {"status": "ok", "chatId": chat_id_int, "registered": True}
 
-            await _send_telegram_message_to_chat(
-                chat_id_int,
-                (
-                    "🔐 Access protected.\n"
-                    "Please authenticate using:\n"
-                    "/auth <INVITE_TOKEN>"
-                ),
-            )
-            return {"status": "ok", "chatId": chat_id_int, "registered": False, "authRequired": True}
-
-        if lower_text.startswith("/auth"):
-            parts = (message.get("text") or "").strip().split(maxsplit=1)
-            if len(parts) < 2 or not parts[1].strip():
-                await _send_telegram_message_to_chat(
-                    chat_id_int,
-                    "❌ Missing token. Use: /auth <INVITE_TOKEN>",
-                )
-                return {"status": "ok", "chatId": chat_id_int, "registered": already_registered, "auth": "missing"}
-
-            submitted = parts[1].strip()
-            token_ok, token_reason = await asyncio.to_thread(consume_invite_token, submitted)
-            master_key_ok = submitted == TELEGRAM_ACCESS_KEY
+        if submitted_token:
+            token_ok, token_reason = await asyncio.to_thread(consume_invite_token, submitted_token)
+            master_key_ok = submitted_token == TELEGRAM_ACCESS_KEY
             if not token_ok and not master_key_ok:
                 reason_to_message = {
                     "invalid": "❌ Invalid invite token. Access denied.",
@@ -1724,10 +1733,30 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
                 "method": "token" if token_ok else "master_key",
             }
 
+        if lower_text.startswith("/auth"):
+            await _send_telegram_message_to_chat(
+                chat_id_int,
+                "❌ Missing token. Use: /auth <INVITE_TOKEN> or paste token directly.",
+            )
+            return {"status": "ok", "chatId": chat_id_int, "registered": already_registered, "auth": "missing"}
+
+        if lower_text.startswith("/start"):
+            await _send_telegram_message_to_chat(
+                chat_id_int,
+                (
+                    "🔐 Access protected.\n"
+                    "Send token quickly in any one format:\n"
+                    "1) /start <INVITE_TOKEN>\n"
+                    "2) /auth <INVITE_TOKEN>\n"
+                    "3) Paste token directly"
+                ),
+            )
+            return {"status": "ok", "chatId": chat_id_int, "registered": False, "authRequired": True}
+
         if not already_registered:
             await _send_telegram_message_to_chat(
                 chat_id_int,
-                "🔐 Not authorized. Send /start and then /auth <INVITE_TOKEN> to subscribe.",
+                "🔐 Not authorized. Send /start <INVITE_TOKEN> or paste your invite token.",
             )
             return {"status": "ok", "chatId": chat_id_int, "registered": False, "authRequired": True}
 
