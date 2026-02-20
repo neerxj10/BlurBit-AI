@@ -821,6 +821,65 @@ SUSPICIOUS_WORDS = [
 ]
 
 
+def heuristic_url_report(url: str, error_text: str = "") -> dict[str, Any]:
+    lowered_url = (url or "").strip().lower()
+    lowered_err = (error_text or "").lower()
+
+    reasons: list[str] = []
+    score = 0
+
+    risky_tlds = [".xyz", ".top", ".click", ".shop", ".info", ".live", ".site"]
+    if any(lowered_url.split("?")[0].endswith(tld) for tld in risky_tlds):
+        score += 2
+        reasons.append("risky_tld")
+
+    brand_bait = ["sbi", "hdfc", "icici", "axis", "paytm", "amazon", "flipkart", "kyc", "verify", "secure", "login"]
+    brand_hits = sum(1 for token in brand_bait if token in lowered_url)
+    if brand_hits >= 2:
+        score += 2
+        reasons.append("brand_or_verify_tokens")
+    elif brand_hits == 1:
+        score += 1
+        reasons.append("single_risky_token")
+
+    if any(x in lowered_url for x in ["@", "%40", "xn--", "bit.ly", "tinyurl", "cutt.ly"]):
+        score += 2
+        reasons.append("obfuscation_or_shortener")
+
+    if lowered_url.startswith("http://"):
+        score += 1
+        reasons.append("non_https")
+
+    if len(lowered_url) > 85:
+        score += 1
+        reasons.append("long_url")
+
+    # If scan engine is unavailable, bias towards caution to avoid ERROR spam in production dashboard.
+    if "executable doesn't exist" in lowered_err or "playwright" in lowered_err:
+        score += 1
+        reasons.append("scan_engine_unavailable")
+
+    verdict = "SAFE"
+    if score >= 4:
+        verdict = "PHISHING"
+    elif score >= 2:
+        verdict = "SUSPICIOUS"
+
+    return {
+        "url": url,
+        "loginForm": False,
+        "keywords": [],
+        "title": "",
+        "screenshot": "",
+        "verdict": verdict,
+        "timestamp": int(time.time()),
+        "fallback": "url_heuristics",
+        "heuristicScore": score,
+        "reasons": reasons,
+        "error": error_text,
+    }
+
+
 async def sandbox_scan_url(url: str, session_id: str) -> dict[str, Any]:
     report: dict[str, Any] = {
         "url": url,
@@ -871,7 +930,8 @@ async def sandbox_scan_url(url: str, session_id: str) -> dict[str, Any]:
 
         return report
     except Exception as exc:
-        return {"url": url, "verdict": "ERROR", "error": str(exc), "timestamp": int(time.time())}
+        # Production-safe fallback: return heuristic verdict instead of hard ERROR.
+        return heuristic_url_report(url, str(exc))
 
 
 async def scan_links(text: str, intel: dict[str, Any], session_id: str) -> tuple[bool, list[dict[str, Any]]]:
