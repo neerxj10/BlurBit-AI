@@ -1031,7 +1031,7 @@ Conversation:
         return fallback_reply(language)
 
 
-def _pick_intel_followup(session: dict[str, Any], language: str) -> str | None:
+def _pick_intel_followup(session: dict[str, Any], language: str) -> tuple[str, str] | None:
     intel = session.get("intel", {}) if isinstance(session, dict) else {}
     history = session.get("history", []) if isinstance(session, dict) else []
 
@@ -1122,25 +1122,91 @@ def _pick_intel_followup(session: dict[str, Any], language: str) -> str | None:
             break
         return selected
 
+    missing: list[str] = []
     if not phone_numbers:
-        return pick_variant("phoneNumbers")
+        missing.append("phoneNumbers")
     if not upi_ids:
-        return pick_variant("upiIds")
+        missing.append("upiIds")
     if not email_addresses:
-        return pick_variant("emailAddresses")
+        missing.append("emailAddresses")
     if not bank_accounts:
-        return pick_variant("bankAccounts")
+        missing.append("bankAccounts")
     if not case_ids:
-        return pick_variant("caseIds")
-    return None
+        missing.append("caseIds")
+    if not missing:
+        return None
+
+    latest_scam_text = ""
+    for msg in reversed(history):
+        if isinstance(msg, dict) and msg.get("sender") == "scammer":
+            latest_scam_text = str(msg.get("text", "")).lower()
+            break
+
+    # Ask follow-up only when it is contextually required by the latest scammer text.
+    has_link_context = any(x in latest_scam_text for x in ["http://", "https://", "www.", "link", "click"])
+    has_otp_context = any(x in latest_scam_text for x in ["otp", "pin", "password", "blocked", "account", "login", "kyc", "verify"])
+    has_payment_context = any(x in latest_scam_text for x in ["pay", "payment", "transfer", "send", "upi", "refund", "cashback", "amount"])
+    has_contact_context = any(x in latest_scam_text for x in ["call", "contact", "number", "helpline", "phone"])
+
+    required_candidates: list[str] = []
+    if has_link_context:
+        required_candidates.extend(["caseIds", "emailAddresses"])
+    if has_otp_context:
+        required_candidates.extend(["caseIds", "emailAddresses", "phoneNumbers"])
+    if has_payment_context:
+        required_candidates.extend(["upiIds", "bankAccounts"])
+    if has_contact_context:
+        required_candidates.extend(["phoneNumbers"])
+
+    # No strong intel ask required for this message; keep only contextual LLM reply.
+    if not required_candidates:
+        return None
+
+    # Remove duplicates while preserving order.
+    preferred_order: list[str] = []
+    for key in required_candidates:
+        if key not in preferred_order:
+            preferred_order.append(key)
+
+    last_honeypot_text = ""
+    for msg in reversed(history):
+        if isinstance(msg, dict) and msg.get("sender") == "honeypot":
+            last_honeypot_text = str(msg.get("text", "")).lower()
+            break
+
+    field_signals: dict[str, list[str]] = {
+        "phoneNumbers": ["phone", "number", "contact", "callback"],
+        "upiIds": ["upi", "handle"],
+        "emailAddresses": ["email", "mail"],
+        "bankAccounts": ["account", "beneficiary", "bank"],
+        "caseIds": ["case", "ticket", "reference", "ref"],
+    }
+    last_asked_field = None
+    for field_key, signals in field_signals.items():
+        if any(signal in last_honeypot_text for signal in signals):
+            last_asked_field = field_key
+            break
+
+    chosen_field = None
+    for field_key in preferred_order:
+        if field_key in missing and field_key != last_asked_field:
+            chosen_field = field_key
+            break
+
+    # If required categories are already present or just asked, skip follow-up this turn.
+    if chosen_field is None:
+        return None
+
+    return chosen_field, pick_variant(chosen_field)
 
 
 def generate_intelligent_reply(session: dict[str, Any], language: str) -> str:
     history = session.get("history", []) if isinstance(session, dict) else []
     contextual_reply = generate_reply(history, language).strip()
-    followup = _pick_intel_followup(session, language)
-    if not followup:
+    followup_meta = _pick_intel_followup(session, language)
+    if not followup_meta:
         return contextual_reply
+    missing_key, followup = followup_meta
 
     lowered = contextual_reply.lower()
     followup_signals = {
@@ -1150,19 +1216,6 @@ def generate_intelligent_reply(session: dict[str, Any], language: str) -> str:
         "bankAccounts": ["account", "beneficiary", "bank"],
         "caseIds": ["case", "ticket", "reference", "ref"],
     }
-    missing_key = None
-    intel = session.get("intel", {}) if isinstance(session, dict) else {}
-    if not (intel.get("phoneNumbers", []) or []):
-        missing_key = "phoneNumbers"
-    elif not (intel.get("upiIds", []) or []):
-        missing_key = "upiIds"
-    elif not (intel.get("emailAddresses", []) or []):
-        missing_key = "emailAddresses"
-    elif not (intel.get("bankAccounts", []) or []):
-        missing_key = "bankAccounts"
-    elif not (intel.get("caseIds", []) or []):
-        missing_key = "caseIds"
-
     # If the LLM reply already asks for the targeted intel category, keep it.
     if missing_key and any(token in lowered for token in followup_signals.get(missing_key, [])):
         return contextual_reply
