@@ -1031,7 +1031,7 @@ Conversation:
         return fallback_reply(language)
 
 
-def generate_intelligent_reply(session: dict[str, Any], language: str) -> str:
+def _pick_intel_followup(session: dict[str, Any], language: str) -> str | None:
     intel = session.get("intel", {}) if isinstance(session, dict) else {}
     history = session.get("history", []) if isinstance(session, dict) else []
 
@@ -1132,8 +1132,45 @@ def generate_intelligent_reply(session: dict[str, Any], language: str) -> str:
         return pick_variant("bankAccounts")
     if not case_ids:
         return pick_variant("caseIds")
+    return None
 
-    return generate_reply(history, language)
+
+def generate_intelligent_reply(session: dict[str, Any], language: str) -> str:
+    history = session.get("history", []) if isinstance(session, dict) else []
+    contextual_reply = generate_reply(history, language).strip()
+    followup = _pick_intel_followup(session, language)
+    if not followup:
+        return contextual_reply
+
+    lowered = contextual_reply.lower()
+    followup_signals = {
+        "phoneNumbers": ["phone", "number", "contact", "callback"],
+        "upiIds": ["upi", "handle", "id"],
+        "emailAddresses": ["email", "mail"],
+        "bankAccounts": ["account", "beneficiary", "bank"],
+        "caseIds": ["case", "ticket", "reference", "ref"],
+    }
+    missing_key = None
+    intel = session.get("intel", {}) if isinstance(session, dict) else {}
+    if not (intel.get("phoneNumbers", []) or []):
+        missing_key = "phoneNumbers"
+    elif not (intel.get("upiIds", []) or []):
+        missing_key = "upiIds"
+    elif not (intel.get("emailAddresses", []) or []):
+        missing_key = "emailAddresses"
+    elif not (intel.get("bankAccounts", []) or []):
+        missing_key = "bankAccounts"
+    elif not (intel.get("caseIds", []) or []):
+        missing_key = "caseIds"
+
+    # If the LLM reply already asks for the targeted intel category, keep it.
+    if missing_key and any(token in lowered for token in followup_signals.get(missing_key, [])):
+        return contextual_reply
+
+    # Keep response concise and natural: contextual acknowledgment + targeted follow-up.
+    if contextual_reply.endswith(("?", "!", ".")):
+        return f"{contextual_reply} {followup}"
+    return f"{contextual_reply}. {followup}"
 
 
 # ==========================================================
