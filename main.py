@@ -1220,21 +1220,50 @@ async def send_telegram_alert(
     upi_ids = intel.get("upiIds", [])
     phone_numbers = intel.get("phoneNumbers", [])
     phishing_links = intel.get("phishingLinks", [])
+    bank_accounts = intel.get("bankAccounts", [])
+    email_addresses = intel.get("emailAddresses", [])
+    case_ids = intel.get("caseIds", [])
+    policy_numbers = intel.get("policyNumbers", [])
+    order_numbers = intel.get("orderNumbers", [])
+    suspicious_keywords = intel.get("suspiciousKeywords", [])
+
+    def _fmt(values: list[Any]) -> str:
+        clean = [str(v).strip() for v in values if str(v).strip()]
+        return ", ".join(clean) if clean else "-"
 
     detailed_text = "\n".join(
         [
             "🚨 HONEYPOT ALERT 🚨",
             "",
             f"Session ID: {session_id}",
-            "",
-            "UPI IDs:",
-            f"{upi_ids}",
+            f"Scam Detected: {scam_detected}",
             "",
             "Phone Numbers:",
-            f"{phone_numbers}",
+            _fmt(phone_numbers),
+            "",
+            "Bank Accounts:",
+            _fmt(bank_accounts),
+            "",
+            "UPI IDs:",
+            _fmt(upi_ids),
+            "",
+            "Email Addresses:",
+            _fmt(email_addresses),
+            "",
+            "Case IDs:",
+            _fmt(case_ids),
+            "",
+            "Policy Numbers:",
+            _fmt(policy_numbers),
+            "",
+            "Order Numbers:",
+            _fmt(order_numbers),
             "",
             "Phishing Links:",
-            f"{phishing_links}",
+            _fmt(phishing_links),
+            "",
+            "Suspicious Keywords:",
+            _fmt(suspicious_keywords[:10]),
             "",
             "Total Messages:",
             f"{len(history)}",
@@ -1248,10 +1277,14 @@ async def send_telegram_alert(
             f"Scam Detected: {scam_detected}",
             f"Messages: {len(history)}",
             "Intel Summary:",
-            f"- Bank Accounts: {len(intel.get('bankAccounts', []))}",
-            f"- UPI IDs: {len(upi_ids)}",
             f"- Phone Numbers: {len(phone_numbers)}",
-            f"- Keywords: {', '.join(intel.get('suspiciousKeywords', [])[:8]) or '-'}",
+            f"- Bank Accounts: {len(bank_accounts)}",
+            f"- UPI IDs: {len(upi_ids)}",
+            f"- Email Addresses: {len(email_addresses)}",
+            f"- Case IDs: {len(case_ids)}",
+            f"- Policy Numbers: {len(policy_numbers)}",
+            f"- Order Numbers: {len(order_numbers)}",
+            f"- Keywords: {', '.join(suspicious_keywords[:8]) or '-'}",
             f"- Phishing Links: {len(phishing_hits)}",
             f"- Suspicious Links: {len(suspicious_hits)}",
         ]
