@@ -1033,6 +1033,7 @@ Conversation:
 
 def generate_intelligent_reply(session: dict[str, Any], language: str) -> str:
     intel = session.get("intel", {}) if isinstance(session, dict) else {}
+    history = session.get("history", []) if isinstance(session, dict) else []
 
     phone_numbers = intel.get("phoneNumbers", []) or []
     upi_ids = intel.get("upiIds", []) or []
@@ -1040,38 +1041,99 @@ def generate_intelligent_reply(session: dict[str, Any], language: str) -> str:
     bank_accounts = intel.get("bankAccounts", []) or []
     case_ids = intel.get("caseIds", []) or []
 
-    if not phone_numbers:
-        return (
-            "Kripya apna official phone number batayein."
-            if language == "hi"
-            else "Can you share your official contact number for verification?"
-        )
-    if not upi_ids:
-        return (
-            "Verification ke liye official UPI ID bhejiye."
-            if language == "hi"
-            else "Please share the official UPI ID for verification."
-        )
-    if not email_addresses:
-        return (
-            "Kripya apna official email address batayein."
-            if language == "hi"
-            else "Can you provide your official email address?"
-        )
-    if not bank_accounts:
-        return (
-            "Kripya official bank account details share karein."
-            if language == "hi"
-            else "Please share your official bank account details for verification."
-        )
-    if not case_ids:
-        return (
-            "Aapka official case ID kya hai?"
-            if language == "hi"
-            else "Can you share your official case/reference ID?"
-        )
+    # Use rotating question variants so the honeypot remains natural while still
+    # collecting high-value intel in a strict priority order.
+    prompts_en: dict[str, list[str]] = {
+        "phoneNumbers": [
+            "Can you share your official contact number for verification?",
+            "What is your callback number from your department?",
+            "Please provide your direct phone number so I can confirm this.",
+        ],
+        "upiIds": [
+            "Please share the official UPI ID for verification.",
+            "Which UPI ID should be used for this process?",
+            "Can you send the exact official UPI handle you are asking me to use?",
+        ],
+        "emailAddresses": [
+            "Can you provide your official email address?",
+            "Please share your support email so I can verify your identity.",
+            "What is your official email ID from your bank team?",
+        ],
+        "bankAccounts": [
+            "Please share your official bank account details for verification.",
+            "What is the account number you are referring to?",
+            "Can you provide the beneficiary account details exactly as registered?",
+        ],
+        "caseIds": [
+            "Can you share your official case/reference ID?",
+            "What is the complaint or ticket number for this issue?",
+            "Please provide the reference ID generated for this case.",
+        ],
+    }
+    prompts_hi: dict[str, list[str]] = {
+        "phoneNumbers": [
+            "Kripya apna official phone number batayein.",
+            "Aapka department ka callback number kya hai?",
+            "Verification ke liye direct contact number bhejiye.",
+        ],
+        "upiIds": [
+            "Verification ke liye official UPI ID bhejiye.",
+            "Is process ke liye kaunsa exact UPI handle use karna hai?",
+            "Jo UPI ID bol rahe hain, woh clearly share karein.",
+        ],
+        "emailAddresses": [
+            "Kripya apna official email address batayein.",
+            "Aapka support email ID share karein.",
+            "Bank team ka official email ID kya hai?",
+        ],
+        "bankAccounts": [
+            "Kripya official bank account details share karein.",
+            "Aap jis account ka bol rahe hain uska number batayein.",
+            "Beneficiary account details exactly bhejiye.",
+        ],
+        "caseIds": [
+            "Aapka official case ID kya hai?",
+            "Is issue ka ticket/reference number batayein.",
+            "Complaint ka generated reference ID share karein.",
+        ],
+    }
 
-    return generate_reply(session.get("history", []), language)
+    def pick_variant(field_key: str) -> str:
+        bank = prompts_hi if language == "hi" else prompts_en
+        options = bank[field_key]
+        last_text = ""
+        for msg in reversed(history):
+            if isinstance(msg, dict) and msg.get("sender") == "scammer":
+                last_text = str(msg.get("text", "")).strip()
+                break
+        seed = f"{field_key}|{len(history)}|{last_text}"
+        idx = int(hashlib.sha256(seed.encode("utf-8")).hexdigest(), 16) % len(options)
+        selected = options[idx]
+
+        # Prevent immediate repetition of the exact same honeypot question.
+        for msg in reversed(history):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("sender") != "honeypot":
+                continue
+            prev = str(msg.get("text", "")).strip()
+            if prev == selected and len(options) > 1:
+                selected = options[(idx + 1) % len(options)]
+            break
+        return selected
+
+    if not phone_numbers:
+        return pick_variant("phoneNumbers")
+    if not upi_ids:
+        return pick_variant("upiIds")
+    if not email_addresses:
+        return pick_variant("emailAddresses")
+    if not bank_accounts:
+        return pick_variant("bankAccounts")
+    if not case_ids:
+        return pick_variant("caseIds")
+
+    return generate_reply(history, language)
 
 
 # ==========================================================
