@@ -1031,6 +1031,49 @@ Conversation:
         return fallback_reply(language)
 
 
+def generate_intelligent_reply(session: dict[str, Any], language: str) -> str:
+    intel = session.get("intel", {}) if isinstance(session, dict) else {}
+
+    phone_numbers = intel.get("phoneNumbers", []) or []
+    upi_ids = intel.get("upiIds", []) or []
+    email_addresses = intel.get("emailAddresses", []) or []
+    bank_accounts = intel.get("bankAccounts", []) or []
+    case_ids = intel.get("caseIds", []) or []
+
+    if not phone_numbers:
+        return (
+            "Kripya apna official phone number batayein."
+            if language == "hi"
+            else "Can you share your official contact number for verification?"
+        )
+    if not upi_ids:
+        return (
+            "Verification ke liye official UPI ID bhejiye."
+            if language == "hi"
+            else "Please share the official UPI ID for verification."
+        )
+    if not email_addresses:
+        return (
+            "Kripya apna official email address batayein."
+            if language == "hi"
+            else "Can you provide your official email address?"
+        )
+    if not bank_accounts:
+        return (
+            "Kripya official bank account details share karein."
+            if language == "hi"
+            else "Please share your official bank account details for verification."
+        )
+    if not case_ids:
+        return (
+            "Aapka official case ID kya hai?"
+            if language == "hi"
+            else "Can you share your official case/reference ID?"
+        )
+
+    return generate_reply(session.get("history", []), language)
+
+
 # ==========================================================
 # CALLBACK
 # ==========================================================
@@ -1142,7 +1185,7 @@ async def send_callback(session_id: str, history: list[dict[str, Any]], intel: d
 
     payload = {
         "sessionId": session_id,
-        "scamDetected": scam_detected,
+        "scamDetected": True if session.get("riskScore", 0) > 0.3 else scam_detected,
         "totalMessagesExchanged": len(history),
         "engagementDurationSeconds": engagement_duration,
         "extractedIntelligence": extracted,
@@ -1445,15 +1488,16 @@ async def honeypot(
     if phishing:
         reply = "Yeh link suspicious lag raha hai. Main ise nahi kholunga." if language == "hi" else "That link looks suspicious. I will not open it."
         async with sessions_lock:
-            if not session.get("callbackSent", False):
+            if (
+                not session.get("callbackSent", False)
+                and float(scoring_result.get("scam_probability", 0.0)) >= 50.0
+                and len(session["history"]) >= 6
+            ):
                 session["callbackSent"] = True
                 background_tasks.add_task(send_callback, body.sessionId, session["history"], session["intel"], True)
     else:
         try:
-            reply = await asyncio.wait_for(
-                asyncio.to_thread(generate_reply, session["history"], language),
-                timeout=max(2.0, REPLY_TIMEOUT_SECONDS),
-            )
+            reply = await asyncio.wait_for(asyncio.to_thread(generate_intelligent_reply, session, language), timeout=max(2.0, REPLY_TIMEOUT_SECONDS))
         except Exception:
             reply = fallback_reply(language)
         async with sessions_lock:
@@ -1461,8 +1505,8 @@ async def honeypot(
             session["updatedAt"] = int(time.time())
             if (
                 not session.get("callbackSent", False)
-                and (score > 0.2 or float(scoring_result["scam_probability"]) >= 65.0)
-                and len(session["history"]) >= 8
+                and float(scoring_result.get("scam_probability", 0.0)) >= 50.0
+                and len(session["history"]) >= 6
             ):
                 session["callbackSent"] = True
                 background_tasks.add_task(send_callback, body.sessionId, session["history"], session["intel"], True)
