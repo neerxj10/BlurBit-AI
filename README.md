@@ -1,102 +1,120 @@
-# Agentic Honeypot AI
+# BlurBit AI - Agentic Honeypot (FastAPI)
 
-Production-ready FastAPI honeypot platform with:
-- Live scam conversation handling
-- Infrastructure-based scam probability scoring (0-100)
-- Real-time dashboard + chat console
-- Telegram webhook registration + alert broadcasting
-- Google sign-in + local auth
-- URL sandbox scanning with Playwright screenshots
+BlurBit AI is a FastAPI-based honeypot system that engages scammers, extracts intelligence, scores risk, and provides real-time dashboard/chat monitoring with Telegram alerting.
+
+## Features
+- `POST /honeypot` scam conversation handler (hackathon-compatible response shape)
+- Entity extraction: phone, bank account, UPI, email, phishing links, case/policy/order IDs
+- Risk scoring (`/analyze`) with scam probability and risk level
+- Playwright URL sandbox scan + screenshots
+- Callback submission to evaluator endpoint
+- Telegram webhook bot with invite/access-request admin flow
+- Authenticated dashboard + live chat console + WebSocket live updates
 
 ## Tech Stack
-
 - Python 3.11+
-- FastAPI
+- FastAPI + Jinja2
 - SQLite
 - Playwright (Chromium)
-- Jinja2 templates + static frontend
-- Telegram Bot API
-
----
+- OpenAI / Ollama (LLM response generation)
 
 ## Project Structure
-
 ```text
 .
-├── main.py                 # FastAPI app (API + auth + dashboard + chat + webhook)
-├── scoring_engine.py       # Scam probability scoring engine
-├── database.py             # Scam history DB and scoring context
+├── main.py
+├── scoring_engine.py
+├── database.py
 ├── requirements.txt
 ├── templates/
 │   ├── auth.html
 │   ├── dashboard.html
 │   └── chat.html
 ├── static/
+│   ├── auth.css
+│   ├── login.js
 │   ├── dashboard.css
 │   ├── dashboard.js
 │   ├── chat.css
-│   └── chat.js
-└── sandbox_shots/          # URL screenshots (runtime)
+│   ├── chat.js
+│   ├── i18n.js
+│   └── BlurBitLogo.png
+├── evaluation/
+│   └── sample_scenarios.json
+└── sandbox_shots/
 ```
 
----
+## Main Endpoints
 
-## Features
+### Auth + UI
+- `GET /` (redirects to login/dashboard)
+- `GET /signup`, `POST /signup`
+- `GET /login`, `POST /login`
+- `GET /logout`
+- `GET /dashboard`
+- `GET /chat`
+- `GET /auth/google/login`
+- `GET /auth/google/callback`
 
-### 1. Honeypot Conversation Engine
-- Endpoint: `POST /honeypot`
-- Extracts intel from scammer messages (UPI, phone, bank account, links)
-- Generates natural replies (English/Hinglish handling)
-- Scans URLs in sandbox and classifies phishing/suspicious
+### Honeypot + Scoring
+- `POST /honeypot` (supports `x-api-key`)
+- `POST /analyze`
+- `POST /honeypot/log` (background login intelligence logging)
 
-### 2. Scam Probability Engine (`/analyze`)
-- Endpoint: `POST /analyze`
-- Returns:
-  - `scam_probability` (0-100)
-  - `risk_level` (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`)
-  - `reasons` (scoring evidence)
-- Uses infrastructure correlation:
-  - UPI clustering and provider patterns
-  - Phone number batch proximity
-  - Suspicious domain infrastructure
-  - Repeat history from SQLite
+### Dashboard APIs
+- `GET /api/overview`
+- `GET /api/sessions`
+- `GET /api/sessions/{session_id}`
+- `POST /api/test-telegram`
+- `WS /ws/live`
 
-### 3. Live Dashboard
-- Route: `GET /dashboard`
-- Real-time updates via WebSocket `GET /ws/live`
-- Includes session table, risk levels, verdict metrics
-- Circular probability gauge (0-100%)
+### Telegram APIs
+- `POST /telegram-webhook`
+- `GET /api/telegram/invite-tokens`
+- `POST /api/telegram/invite-token`
+- `POST /api/telegram/invite-token/revoke`
+- `GET /api/telegram/access-requests`
+- `POST /api/telegram/access-request/approve`
+- `POST /api/telegram/access-request/reject`
 
-### 4. Live Chat Console
-- Route: `GET /chat`
-- Simulates live scammer-to-honeypot conversation
-- Session intel panel + exports + test Telegram alerts
+### Evaluation APIs
+- `GET /api/evaluation/scenarios`
+- `POST /api/evaluation/run` (requires `x-api-key`)
 
-### 5. Telegram Broadcast Alerts (Webhook-only)
-- Endpoint: `POST /telegram-webhook`
-- Any user sending `/start` to bot is auto-registered in `users.json`
-- Alerts are broadcast to all registered users
-- Screenshot sent once per session
+### Health / Debug
+- `GET /health`
+- `GET /debug/google`
 
-### 6. Authentication
-- Signup/login with local credentials
-- Google OAuth sign-in
+## Hackathon Submission Endpoint
+- **URL**: `https://<your-domain>/honeypot`
+- **Method**: `POST`
+- **Header**: `x-api-key: <HONEYPOT_API_KEY>` (if enabled)
+- **Response shape**:
+```json
+{
+  "status": "success",
+  "reply": "..."
+}
+```
 
-### 7. Evaluation System (Scenarios + Runner)
-- Scenarios file: `evaluation/sample_scenarios.json`
-- List scenarios: `GET /api/evaluation/scenarios` (requires login cookie)
-- Run evaluation: `POST /api/evaluation/run` (requires `x-api-key`)
-- Evaluator runs each scenario through live `/honeypot` flow and returns:
-  - pass/fail per run
-  - pass rate
-  - final `scam_probability`, `risk_level`, and `reasons`
+## `/honeypot` Sample Request
+```json
+{
+  "sessionId": "uuid-or-string",
+  "message": {
+    "sender": "scammer",
+    "text": "URGENT: Your account is blocked. Share OTP now.",
+    "timestamp": 1739269800000
+  },
+  "conversationHistory": [],
+  "metadata": {
+    "channel": "SMS",
+    "language": "English",
+    "locale": "IN"
+  }
+}
+```
 
----
-
-## Environment Variables
-
-Create `.env` in project root:
-
+## Environment Variables (`.env`)
 ```env
 # Core
 HONEYPOT_API_KEY=your_api_key
@@ -104,30 +122,43 @@ OPENAI_API_KEY=your_openai_key
 OLLAMA_URL=http://localhost:11434/api/generate
 CALLBACK_URL=https://hackathon.guvi.in/api/updateHoneyPotFinalResult
 
-# Auth
+# Auth + DB
 AUTH_SECRET=replace_with_long_random_secret
+DB_PATH=users.db
 
 # Google OAuth
-GOOGLE_CLIENT_ID=...
-GOOGLE_CLIENT_SECRET=...
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
 GOOGLE_REDIRECT_URI=http://127.0.0.1:8000/auth/google/callback
 
 # Telegram
-TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALERTS_ENABLED=true
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_BOT_USERNAME=BlurBitAI_bot
+TELEGRAM_ACCESS_KEY=
+TELEGRAM_ADMIN_EMAILS=
 TELEGRAM_USERS_FILE=users.json
+TELEGRAM_INVITE_TOKENS_FILE=telegram_invite_tokens.json
+TELEGRAM_ACCESS_REQUESTS_FILE=telegram_access_requests.json
+TELEGRAM_UPDATE_DEDUPE_TTL_SECONDS=600
 
-# Storage paths
-DB_PATH=users.db
-SCAM_DB_PATH=scam_history.db
+# Files / runtime
 SCREENSHOT_DIR=sandbox_shots
 EVALUATION_SCENARIOS_FILE=evaluation/sample_scenarios.json
+HONEYPOT_LOG_FILE=honeypot_login_logs.jsonl
+ASSET_VERSION=1
+
+# Performance tuning
+MAX_URL_SCAN_PER_MESSAGE=1
+PLAYWRIGHT_GOTO_TIMEOUT_MS=8000
+LINK_SCAN_TIMEOUT_SECONDS=10
+HONEY_POT_STRICT_RESPONSE=true
+OPENAI_CHAT_TIMEOUT_SECONDS=8
+OLLAMA_CHAT_TIMEOUT_SECONDS=8
+REPLY_TIMEOUT_SECONDS=9
 ```
 
----
-
-## Local Setup
-
+## Local Run
 ```bash
 cd "/Users/neerajkoushik/Documents/New project"
 python3 -m venv .venv
@@ -142,100 +173,7 @@ Open:
 - `http://127.0.0.1:8000/dashboard`
 - `http://127.0.0.1:8000/chat`
 
----
-
-## API Reference
-
-### Health
-```http
-GET /health
-```
-
-### Honeypot Conversation
-```http
-POST /honeypot
-Header: x-api-key: <HONEYPOT_API_KEY>
-Content-Type: application/json
-
-{
-  "sessionId": "session-001",
-  "message": {
-    "sender": "scammer",
-    "text": "Your account is blocked. Send OTP now",
-    "timestamp": 1700000000
-  },
-  "conversationHistory": [],
-  "metadata": {}
-}
-```
-
-### Scam Analysis
-```http
-POST /analyze
-Content-Type: application/json
-
-{
-  "message": "urgent transfer to refund01@paytm",
-  "phone": "+919876543210",
-  "upi": "refund01@paytm",
-  "links": ["https://sbi-verify1.xyz"]
-}
-```
-
-### Telegram Webhook
-```http
-POST /telegram-webhook
-```
-
-Telegram sends updates here automatically.
-
-### Evaluation Scenarios
-```http
-GET /api/evaluation/scenarios
-```
-
-### Evaluation Run
-```http
-POST /api/evaluation/run
-Header: x-api-key: <HONEYPOT_API_KEY>
-Content-Type: application/json
-
-{
-  "scenarioIds": ["bank_account_blocked_link", "refund_upi_collection"],
-  "repeats": 1
-}
-```
-
----
-
-## Telegram Setup
-
-1. Create bot with BotFather and get token.
-2. Deploy app to a public URL.
-3. Set webhook:
-
-```text
-https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://<YOUR_DOMAIN>/telegram-webhook
-```
-
-4. Send `/start` to your bot from Telegram.
-5. Your `chat_id` gets stored in `users.json`.
-6. Alerts are broadcast to all registered users.
-
----
-
-## Google OAuth Setup
-
-In Google Cloud OAuth client:
-- Authorized redirect URI:
-  - Local: `http://127.0.0.1:8000/auth/google/callback`
-  - Production: `https://<your-domain>/auth/google/callback`
-
-Common error `invalid_client` means client ID/secret or redirect URI mismatch.
-
----
-
-## Deploy on Render
+## Render Deployment
 
 ### Build Command
 ```bash
@@ -247,75 +185,44 @@ pip install -r requirements.txt && python -m playwright install chromium
 uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
-### Required Env Vars on Render
-- `HONEYPOT_API_KEY`
-- `OPENAI_API_KEY` (optional if fallback used)
-- `AUTH_SECRET`
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_ALERTS_ENABLED=true`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `GOOGLE_REDIRECT_URI=https://<service>.onrender.com/auth/google/callback`
-- `EVALUATION_SCENARIOS_FILE=/var/data/evaluation/sample_scenarios.json` (if storing on disk)
-
 ### Persistent Disk (recommended)
-Set paths to mounted disk, e.g. `/var/data`:
+Use `/var/data` for file-backed runtime data on Render:
 - `DB_PATH=/var/data/users.db`
-- `SCAM_DB_PATH=/var/data/scam_history.db`
-- `TELEGRAM_USERS_FILE=/var/data/users.json`
 - `SCREENSHOT_DIR=/var/data/sandbox_shots`
+- `TELEGRAM_USERS_FILE=/var/data/users.json`
+- `TELEGRAM_INVITE_TOKENS_FILE=/var/data/telegram_invite_tokens.json`
+- `TELEGRAM_ACCESS_REQUESTS_FILE=/var/data/telegram_access_requests.json`
+- `HONEYPOT_LOG_FILE=/var/data/honeypot_login_logs.jsonl`
 
-For evaluation scenarios on Render disk:
-- Create directory `/var/data/evaluation`
-- Copy scenarios file there or keep bundled repo file
-- If using disk file: set `EVALUATION_SCENARIOS_FILE=/var/data/evaluation/sample_scenarios.json`
+## Telegram Webhook Setup
+After deploy:
+```text
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://<YOUR_DOMAIN>/telegram-webhook
+```
 
-### Your Live Render URL
-- Base URL: `https://blurbit-ai.onrender.com`
-- Health check: `https://blurbit-ai.onrender.com/health`
-- Dashboard: `https://blurbit-ai.onrender.com/dashboard`
-- Chat: `https://blurbit-ai.onrender.com/chat`
-- Telegram webhook target:
-  - `https://blurbit-ai.onrender.com/telegram-webhook`
-  - Set webhook:
-    - `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://blurbit-ai.onrender.com/telegram-webhook`
-
----
+Example:
+```text
+https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://blurbit-ai.onrender.com/telegram-webhook
+```
 
 ## Troubleshooting
 
-### `No module named requests`
-```bash
-pip install -r requirements.txt
-```
+### Playwright link verdict = `ERROR` on Render
+- Cause: Chromium not installed in build image
+- Fix: ensure build command includes `python -m playwright install chromium`
 
-### Uvicorn reload loop
-Avoid writing generated files inside watched source dirs, or run:
-```bash
-uvicorn main:app --reload --reload-exclude sandbox_shots
-```
+### Google OAuth `401 invalid_client`
+- Verify exact `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+- Verify exact redirect URI in Google Cloud OAuth client
+- Check via `GET /debug/google`
 
-### Telegram alerts not coming
-- Check `TELEGRAM_BOT_TOKEN`
-- Confirm webhook is set to your live domain
-- Ensure at least one user sent `/start`
-
-### Google sign-in 401 / invalid_client
-- Verify exact client ID + secret
-- Verify exact redirect URI match in Google console
-
----
+### Telegram not receiving alerts
+- Verify `TELEGRAM_BOT_TOKEN`
+- Verify webhook is set correctly
+- Ensure recipient is authorized through invite/request flow
 
 ## Security Notes
-
-- Never commit `.env`
-- Rotate bot tokens and secrets if leaked
-- Use strong `AUTH_SECRET`
-- Restrict API keys in production
-- Use HTTPS in production
-
----
-
-## License
-
-Use internally for demo/hackathon unless a project license is added.
+- Never commit `.env` or secrets
+- Rotate exposed bot/API keys immediately
+- Keep `HONEYPOT_API_KEY` private
+- Use a strong `AUTH_SECRET`
