@@ -30,6 +30,7 @@ from starlette.requests import Request
 from database import init_scam_db, load_scoring_context, save_analysis_event
 from playwright.async_api import async_playwright
 from scoring_engine import calculate_scam_probability
+from blockchain_logger import create_security_log, router as blockchain_logger_router
 
 load_dotenv(override=True)
 
@@ -66,6 +67,7 @@ HONEYPOT_LOG_FILE = Path(os.getenv("HONEYPOT_LOG_FILE", str(Path.cwd() / "honeyp
 
 app = FastAPI(title="Agentic Honeypot AI (Dashboard Edition)")
 client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+app.include_router(blockchain_logger_router)
 
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["asset_version"] = ASSET_VERSION
@@ -185,6 +187,18 @@ def current_user_from_ws(ws: WebSocket) -> dict[str, Any] | None:
     if not payload:
         return None
     return {"id": payload["uid"], "email": payload["email"], "name": payload["name"]}
+
+
+def get_request_ip(request: Request) -> str:
+    forwarded = (request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = (request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
 
 
 def get_google_redirect_uri(request: Request | None = None) -> str:
@@ -1667,6 +1681,7 @@ def evaluate_scenario_result(last_data: dict[str, Any], scenario: dict[str, Any]
 
 @app.post("/honeypot")
 async def honeypot(
+    request: Request,
     body: RequestBody,
     background_tasks: BackgroundTasks,
     x_api_key: str | None = Header(None),
@@ -1729,6 +1744,19 @@ async def honeypot(
         session["scamProbability"] = float(scoring_result["scam_probability"])
         session["riskLevel"] = str(scoring_result["risk_level"])
         session["riskReasons"] = list(scoring_result.get("reasons", []))[:8]
+
+    # Tamper-proof audit trail for high-risk/security-relevant honeypot events.
+    try:
+        scam_probability = float(scoring_result.get("scam_probability", 0.0))
+        if phishing or scam_probability >= 50.0:
+            event_action = (
+                f"honeypot_phishing_detected score={scam_probability:.2f}"
+                if phishing
+                else f"honeypot_high_risk_message score={scam_probability:.2f}"
+            )
+            await asyncio.to_thread(create_security_log, body.sessionId, event_action, get_request_ip(request))
+    except Exception:
+        pass
 
     if phishing:
         reply = "Yeh link suspicious lag raha hai. Main ise nahi kholunga." if language == "hi" else "That link looks suspicious. I will not open it."
@@ -1988,6 +2016,7 @@ async def login_page(request: Request, error: str | None = None) -> HTMLResponse
 
 @app.post("/login")
 async def login_submit(
+    request: Request,
     email: str = Form(...),
     password: str = Form(...),
     username_hidden: str = Form(""),
@@ -2007,14 +2036,50 @@ async def login_submit(
                 "serverTime": int(time.time()),
             },
         )
+        try:
+            await asyncio.to_thread(
+                create_security_log,
+                (email or "unknown").strip() or "unknown",
+                "login_honeypot_trap_field_filled",
+                get_request_ip(request),
+            )
+        except Exception:
+            pass
     user = get_user_by_email(email)
     if not user or not user["password_salt"] or not user["password_hash"]:
+        try:
+            await asyncio.to_thread(
+                create_security_log,
+                (email or "unknown").strip() or "unknown",
+                "login_failed_invalid_credentials",
+                get_request_ip(request),
+            )
+        except Exception:
+            pass
         return RedirectResponse(url="/login?error=Invalid+email+or+password", status_code=303)
     if not verify_password(password, user["password_salt"], user["password_hash"]):
+        try:
+            await asyncio.to_thread(
+                create_security_log,
+                (email or "unknown").strip() or "unknown",
+                "login_failed_invalid_password",
+                get_request_ip(request),
+            )
+        except Exception:
+            pass
         return RedirectResponse(url="/login?error=Invalid+email+or+password", status_code=303)
 
     response = RedirectResponse(url="/dashboard", status_code=303)
     issue_auth_cookie(response, user)
+    try:
+        await asyncio.to_thread(
+            create_security_log,
+            str(user["email"]),
+            "login_success",
+            get_request_ip(request),
+        )
+    except Exception:
+        pass
     return response
 
 
@@ -2329,6 +2394,8 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     first_name = str(chat.get("first_name") or "").strip()
     last_name = str(chat.get("last_name") or "").strip()
     full_name = " ".join(x for x in [first_name, last_name] if x).strip()
+    actor = username or full_name or f"telegram:{chat_id_int}"
+    req_ip = get_request_ip(request)
 
     if TELEGRAM_ALERTS_ENABLED and TELEGRAM_BOT_TOKEN:
         if already_registered:
@@ -2337,6 +2404,10 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
                     chat_id_int,
                     "✅ You are already subscribed to Honeypot alerts.",
                 )
+                try:
+                    await asyncio.to_thread(create_security_log, actor, "telegram_start_already_registered", req_ip)
+                except Exception:
+                    pass
             return {"status": "ok", "chatId": chat_id_int, "registered": True}
 
         if submitted_token:
@@ -2354,6 +2425,15 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
                     chat_id_int,
                     reason_to_message.get(token_reason, "❌ Authentication failed."),
                 )
+                try:
+                    await asyncio.to_thread(
+                        create_security_log,
+                        actor,
+                        f"telegram_auth_failed_{token_reason}",
+                        req_ip,
+                    )
+                except Exception:
+                    pass
                 return {
                     "status": "ok",
                     "chatId": chat_id_int,
@@ -2371,6 +2451,11 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
                 chat_id_int,
                 "✅ Authentication successful. You are now subscribed to Honeypot alerts.",
             )
+            try:
+                method = "token" if token_ok else "master_key"
+                await asyncio.to_thread(create_security_log, actor, f"telegram_auth_success_{method}", req_ip)
+            except Exception:
+                pass
             return {
                 "status": "ok",
                 "chatId": chat_id_int,
@@ -2385,6 +2470,10 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
                 chat_id_int,
                 "❌ Missing token. Use: /auth <INVITE_TOKEN> or paste token directly.",
             )
+            try:
+                await asyncio.to_thread(create_security_log, actor, "telegram_auth_missing_token", req_ip)
+            except Exception:
+                pass
             return {"status": "ok", "chatId": chat_id_int, "registered": already_registered, "auth": "missing"}
 
         if lower_text.startswith("/start"):
@@ -2400,6 +2489,10 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
                     "3) Paste token directly"
                 ),
             )
+            try:
+                await asyncio.to_thread(create_security_log, actor, "telegram_access_request_created", req_ip)
+            except Exception:
+                pass
             return {"status": "ok", "chatId": chat_id_int, "registered": False, "authRequired": True}
 
         if not already_registered:
@@ -2409,6 +2502,10 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
                 chat_id_int,
                 "🔐 Not authorized. Request logged. Send /start <INVITE_TOKEN> or paste your invite token after admin approval.",
             )
+            try:
+                await asyncio.to_thread(create_security_log, actor, "telegram_not_authorized_request_logged", req_ip)
+            except Exception:
+                pass
             return {"status": "ok", "chatId": chat_id_int, "registered": False, "authRequired": True}
 
     return {"status": "ok", "chatId": chat_id_int, "registered": already_registered}
